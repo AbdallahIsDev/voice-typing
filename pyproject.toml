@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voice-typer"
+version = "1.0.0"
+description = "Background voice-to-text utility with system tray"
+requires-python = ">=3.10"
+dependencies = [
+    "faster-whisper>=1.0",
+    "sounddevice>=0.5",
+    "numpy",
+    "scipy",
+    "pyperclip",
+    "pystray",
+    "Pillow",
+    "pynput",
+]
+
+[project.scripts]
+voice-typer = "voice_typer.app:main"
+
+[project.optional-dependencies]
+test = ["pytest>=7", "pytest-mock"]
+
+[tool.setuptools.packages.find]
+include = ["voice_typer*"]

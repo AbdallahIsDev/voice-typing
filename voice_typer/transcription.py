@@ -1,0 +1,224 @@
+"""Whisper transcription engine using faster-whisper."""
+
+import logging
+from typing import Optional
+
+import numpy as np
+
+log = logging.getLogger(__name__)
+
+_WHISPER_SAMPLE_RATE = 16000  # Whisper always expects 16kHz input
+
+
+class TranscriptionEngine:
+    """Wraps faster-whisper model loading and transcription."""
+
+    def __init__(
+        self,
+        model_size: str = "small.en",
+        device: str = "auto",
+        language: str = "en",
+        beam_size: int = 1,
+        best_of: int = 1,
+        condition_on_previous_text: bool = False,
+    ):
+        self.model_size = model_size
+        self.language = language
+        self.beam_size = beam_size
+        self.best_of = best_of
+        self.condition_on_previous_text = condition_on_previous_text
+        self._model = None
+        self._device, self._compute_type = self._resolve_device(device)
+
+    def _resolve_device(self, device: str) -> tuple[str, str]:
+        """Auto-detect best device and compute type."""
+        if device == "cpu":
+            return "cpu", "int8"
+
+        # Try CUDA
+        if device in ("auto", "cuda"):
+            try:
+                import ctranslate2
+                if ctranslate2.get_cuda_device_count() > 0:
+                    log.info("Using CUDA device for transcription")
+                    return "cuda", "float16"
+            except Exception:
+                pass
+
+            if device == "cuda":
+                log.warning("CUDA requested but not available, falling back to CPU")
+
+        log.info("Using CPU for transcription")
+        return "cpu", "int8"
+
+    @property
+    def is_loaded(self) -> bool:
+        """Return True if the model has been loaded successfully."""
+        return self._model is not None
+
+    @property
+    def device_info(self) -> str:
+        return f"{self._device} ({self._compute_type})"
+
+    @property
+    def loaded_via(self) -> str:
+        """Return a description of the device/model combo that was successfully loaded."""
+        return f"{self._device}/{self._compute_type}/{self.model_size}"
+
+    def load(self):
+        """Load the Whisper model. Downloads on first run.
+
+        Fallback chain:
+          1. Configured device (e.g. CUDA/float16)
+          2. CPU / int8 with original model size
+          3. CPU / int8 with tiny.en
+          4. CPU / float32 with tiny.en (last resort — avoids MKL int8 path)
+
+        Stores which path succeeded via loaded_via property.
+        """
+        if self._model is not None:
+            return
+
+        from faster_whisper import WhisperModel
+
+        # Build fallback chain
+        chain: list[tuple[str, str, str]] = []  # (device, compute_type, model_size)
+        chain.append((self._device, self._compute_type, self.model_size))
+        if self._device != "cpu" or self._compute_type != "int8":
+            chain.append(("cpu", "int8", self.model_size))
+        if self.model_size != "tiny.en":
+            chain.append(("cpu", "int8", "tiny.en"))
+        # Last resort: float32 avoids MKL int8 memory allocation entirely
+        chain.append(("cpu", "float32", "tiny.en"))
+
+        last_error = None
+        for device, compute_type, model_size in chain:
+            try:
+                log.info(
+                    "Loading Whisper model '%s' on %s (%s)...",
+                    model_size, device, compute_type,
+                )
+                self._model = WhisperModel(
+                    model_size,
+                    device=device,
+                    compute_type=compute_type,
+                )
+                # Update stored device info on success
+                self._device = device
+                self._compute_type = compute_type
+                self.model_size = model_size
+                log.info("Model loaded via %s", self.loaded_via)
+                return
+            except Exception as exc:
+                last_error = exc
+                log.warning(
+                    "Model load failed on %s (%s) model=%s: %s",
+                    device, compute_type, model_size, exc,
+                )
+                self._model = None
+
+        # All paths exhausted
+        raise RuntimeError(
+            f"Failed to load Whisper model on any device/model. "
+            f"Last error: {last_error}"
+        ) from last_error
+
+    def transcribe(self, audio: np.ndarray) -> str:
+        """Transcribe audio array. Returns cleaned text string."""
+        if self._model is None:
+            raise RuntimeError("Model not loaded. Call load() first.")
+
+        if len(audio) == 0:
+            return ""
+
+        # Log audio statistics for diagnostics
+        duration = len(audio) / _WHISPER_SAMPLE_RATE
+        rms = float(np.sqrt(np.mean(np.square(audio), dtype=np.float64)))
+        peak = float(np.max(np.abs(audio)))
+        silence_pct = float(np.sum(np.abs(audio) < 0.001) / audio.size * 100)
+        log.info(
+            "[TRANSCRIBE] Input audio: samples=%d, duration=%.1fs, "
+            "RMS=%.6f, peak=%.6f, silence_pct=%.1f%%",
+            len(audio), duration, rms, peak, silence_pct,
+        )
+        if rms < 0.001:
+            log.warning(
+                "[TRANSCRIBE] Near-silence input (RMS=%.6f). "
+                "Speech detection is unlikely.",
+                rms,
+            )
+
+        segments, info = self._model.transcribe(
+            audio,
+            beam_size=self.beam_size,
+            best_of=self.best_of,
+            temperature=0.0,
+            vad_filter=True,
+            vad_parameters=dict(
+                min_silence_duration_ms=500,
+                speech_pad_ms=200,
+            ),
+            language=self.language,
+            condition_on_previous_text=self.condition_on_previous_text,
+            without_timestamps=True,
+        )
+
+        # Collect segments and log VAD info
+        text_parts = []
+        for seg in segments:
+            if seg.text.strip():
+                text_parts.append(seg.text.strip())
+                log.debug(
+                    "[TRANSCRIBE] Segment: [%.1fs - %.1fs] %s",
+                    seg.start or 0.0, seg.end or 0.0, seg.text.strip(),
+                )
+
+        log.info(
+            "[TRANSCRIBE] VAD result: language=%s (prob=%.2f), segments=%d",
+            info.language, info.language_probability, len(text_parts),
+        )
+
+        result = " ".join(text_parts).strip()
+        if result:
+            log.info("[TRANSCRIBE] Result: %s", result[:200])
+        else:
+            log.info(
+                "[TRANSCRIBE] No speech detected (RMS=%.6f, silence=%.1f%%)",
+                rms, silence_pct,
+            )
+        return result
+
+    def transcribe_with_fallback(self, audio: np.ndarray) -> str:
+        """Transcribe with automatic CPU fallback on GPU runtime errors.
+
+        If the first attempt fails with a CUDA/cuBLAS/runtime error and
+        the model was loaded on GPU, reload on CPU and retry once.
+        """
+        try:
+            return self.transcribe(audio)
+        except Exception as first_err:
+            error_str = str(first_err).lower()
+            is_gpu_error = (
+                self._device != "cpu"
+                and any(kw in error_str for kw in [
+                    "cublas", "cuda", "cudnn", "gpu",
+                    "not found or cannot be loaded",
+                ])
+            )
+            if not is_gpu_error:
+                raise
+
+            log.warning(
+                "GPU transcription failed (%s), falling back to CPU",
+                first_err,
+            )
+            # Tear down GPU model, reload on CPU
+            self._model = None
+            self._device = "cpu"
+            self._compute_type = "int8"
+            self.load()  # reloads with the new CPU config
+            return self.transcribe(audio)
+
+    def unload(self):
+        """Free model memory."""
+        self._model = None

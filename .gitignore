@@ -1,0 +1,18 @@
+.venv/
+.pytest_cache/
+.omx/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Runtime/debug output
+*.log
+runtime_log*.txt
+voice_typer_stderr.log
+nul
+
+# Local editor/OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
