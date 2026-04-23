@@ -1,5 +1,6 @@
 .venv/
 .pytest_cache/
+.playwright-mcp/
 .omx/
 __pycache__/
 *.py[cod]
