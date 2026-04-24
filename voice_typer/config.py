@@ -38,6 +38,15 @@ class Config:
     best_of: int = 1
     condition_on_previous_text: bool = False
 
+    # Hidden streaming transcription
+    streaming_transcription: bool = False
+    streaming_chunk_seconds: float = 12.0
+    streaming_step_seconds: float = 5.0
+    streaming_left_overlap_seconds: float = 2.0
+    streaming_right_guard_seconds: float = 1.0
+    streaming_min_first_chunk_seconds: float = 6.0
+    streaming_silence_threshold: float = 0.003
+
     # Behavior
     autostart: bool = True
     paste_on_stop: bool = True

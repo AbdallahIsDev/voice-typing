@@ -20,6 +20,13 @@ class TestConfigDefaults:
         assert c.beam_size == 1
         assert c.best_of == 1
         assert c.condition_on_previous_text is False
+        assert c.streaming_transcription is False
+        assert c.streaming_chunk_seconds == 12.0
+        assert c.streaming_step_seconds == 5.0
+        assert c.streaming_left_overlap_seconds == 2.0
+        assert c.streaming_right_guard_seconds == 1.0
+        assert c.streaming_min_first_chunk_seconds == 6.0
+        assert c.streaming_silence_threshold == 0.003
         assert c.autostart is True
         assert c.paste_on_stop is True
         assert c.show_notifications is True
@@ -92,6 +99,13 @@ class TestConfigLoadSave:
             beam_size=3,
             best_of=2,
             condition_on_previous_text=True,
+            streaming_transcription=True,
+            streaming_chunk_seconds=10.0,
+            streaming_step_seconds=4.0,
+            streaming_left_overlap_seconds=1.5,
+            streaming_right_guard_seconds=0.75,
+            streaming_min_first_chunk_seconds=5.0,
+            streaming_silence_threshold=0.001,
             autostart=True,
             paste_on_stop=False,
             show_notifications=False,
@@ -105,6 +119,13 @@ class TestConfigLoadSave:
         assert c1.beam_size == c2.beam_size
         assert c1.best_of == c2.best_of
         assert c1.condition_on_previous_text == c2.condition_on_previous_text
+        assert c1.streaming_transcription == c2.streaming_transcription
+        assert c1.streaming_chunk_seconds == c2.streaming_chunk_seconds
+        assert c1.streaming_step_seconds == c2.streaming_step_seconds
+        assert c1.streaming_left_overlap_seconds == c2.streaming_left_overlap_seconds
+        assert c1.streaming_right_guard_seconds == c2.streaming_right_guard_seconds
+        assert c1.streaming_min_first_chunk_seconds == c2.streaming_min_first_chunk_seconds
+        assert c1.streaming_silence_threshold == c2.streaming_silence_threshold
         assert c1.autostart == c2.autostart
         assert c1.paste_on_stop == c2.paste_on_stop
         assert c1.show_notifications == c2.show_notifications
