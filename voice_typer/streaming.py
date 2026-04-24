@@ -1,9 +1,14 @@
 """Core helpers for hidden streaming transcription."""
 
 from dataclasses import dataclass, field
+import logging
+import math
+import threading
 from typing import Iterable
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -174,3 +179,123 @@ class StreamingTextAssembler:
                 word.end_seconds,
             )
         return " ".join(committed)
+
+
+class StreamingTranscriptionSession:
+    """Hidden streaming worker for one recording session."""
+
+    def __init__(
+        self,
+        recorder,
+        transcriber,
+        config: StreamingConfig,
+        sample_rate: int,
+        poll_interval_seconds: float = 0.25,
+    ):
+        self.recorder = recorder
+        self.transcriber = transcriber
+        self.config = config
+        self.sample_rate = sample_rate
+        self.poll_interval_seconds = poll_interval_seconds
+        self.planner = AudioWindowPlanner(config)
+        self.assembler = StreamingTextAssembler()
+        self._cancel_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._fallback_required = False
+        self._lock = threading.Lock()
+
+    @property
+    def confirmed_text(self) -> str:
+        return self.assembler.committed_text
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self):
+        """Start the background streaming worker."""
+        if self.is_running:
+            return
+        self._cancel_event.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="StreamingTranscription",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def cancel(self):
+        """Stop background streaming work and wait briefly for the worker."""
+        self._cancel_event.set()
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+
+    def process_available_audio_once(self) -> bool:
+        """Process one planned window if enough audio is available."""
+        if self._fallback_required:
+            return False
+
+        try:
+            audio = self.recorder.snapshot()
+            window = self.planner.next_window(audio, self.sample_rate)
+            if window is None:
+                return False
+
+            words = self.transcriber.transcribe_words(
+                window.audio,
+                offset_seconds=window.start_seconds,
+            )
+            self._validate_words(words)
+            with self._lock:
+                self.assembler.add_window(
+                    window,
+                    words,
+                    right_guard_seconds=self.config.right_guard_seconds,
+                )
+            return True
+        except Exception as exc:
+            log.exception("[STREAMING] Chunk transcription failed: %s", exc)
+            self._fallback_required = True
+            return False
+
+    def finalize(self, full_audio: np.ndarray) -> str:
+        """Return final transcript, using batch fallback if streaming is unsafe."""
+        self.cancel()
+        if self._fallback_required:
+            return self.transcriber.transcribe_with_fallback(full_audio)
+
+        try:
+            tail_start_seconds = max(
+                0.0,
+                self.assembler.last_committed_time
+                - self.config.left_overlap_seconds,
+            )
+            start_sample = min(
+                len(full_audio),
+                int(round(tail_start_seconds * self.sample_rate)),
+            )
+            tail_audio = full_audio[start_sample:]
+            words = self.transcriber.transcribe_words(
+                tail_audio,
+                offset_seconds=tail_start_seconds,
+            )
+            self._validate_words(words)
+            with self._lock:
+                self.assembler.add_words(words, commit_horizon_seconds=math.inf)
+                return self.assembler.committed_text
+        except Exception as exc:
+            log.exception("[STREAMING] Final tail merge failed: %s", exc)
+            return self.transcriber.transcribe_with_fallback(full_audio)
+
+    def _run(self):
+        while not self._cancel_event.is_set():
+            self.process_available_audio_once()
+            self._cancel_event.wait(self.poll_interval_seconds)
+
+    def _validate_words(self, words: Iterable[WordTiming]):
+        for word in words:
+            if not isinstance(word.word, str):
+                raise TypeError("word text must be a string")
+            if word.start_seconds is None or word.end_seconds is None:
+                raise TypeError("word timestamps are required")

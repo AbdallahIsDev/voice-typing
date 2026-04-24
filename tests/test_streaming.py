@@ -1,11 +1,13 @@
 """Tests for streaming transcription planning and text assembly."""
 
 import numpy as np
+from unittest.mock import MagicMock
 
 from voice_typer.streaming import (
     AudioWindow,
     AudioWindowPlanner,
     StreamingConfig,
+    StreamingTranscriptionSession,
     StreamingTextAssembler,
     WordTiming,
 )
@@ -135,3 +137,84 @@ def test_streaming_text_assembler_preserves_repeated_words_at_later_timestamps()
 
     assert committed == "yes yes"
     assert assembler.committed_text == "yes yes"
+
+
+def test_streaming_session_finalizes_only_uncommitted_tail():
+    config = StreamingConfig(
+        min_first_chunk_seconds=5.0,
+        chunk_seconds=5.0,
+        step_seconds=5.0,
+        left_overlap_seconds=0.5,
+        right_guard_seconds=1.0,
+    )
+    recorder = MagicMock()
+    recorder.snapshot.return_value = audio_seconds(5.0)
+    transcriber = MagicMock()
+    transcriber.transcribe_words.side_effect = [
+        [
+            WordTiming("hello", start_seconds=0.2, end_seconds=0.7),
+            WordTiming("stable", start_seconds=2.5, end_seconds=3.0),
+            WordTiming("late", start_seconds=4.4, end_seconds=4.8),
+        ],
+        [
+            WordTiming("stable", start_seconds=2.6, end_seconds=3.0),
+            WordTiming("world", start_seconds=4.4, end_seconds=4.8),
+        ],
+    ]
+
+    session = StreamingTranscriptionSession(
+        recorder=recorder,
+        transcriber=transcriber,
+        config=config,
+        sample_rate=SAMPLE_RATE,
+    )
+
+    assert session.process_available_audio_once() is True
+    assert session.confirmed_text == "hello stable"
+
+    final_text = session.finalize(audio_seconds(5.0))
+
+    assert final_text == "hello stable world"
+    assert transcriber.transcribe_with_fallback.call_count == 0
+    second_call = transcriber.transcribe_words.call_args_list[1]
+    assert second_call.kwargs["offset_seconds"] == 2.5
+
+
+def test_streaming_session_falls_back_after_chunk_failure():
+    recorder = MagicMock()
+    recorder.snapshot.return_value = audio_seconds(6.0)
+    transcriber = MagicMock()
+    transcriber.transcribe_words.side_effect = RuntimeError("chunk failed")
+    transcriber.transcribe_with_fallback.return_value = "batch fallback"
+
+    session = StreamingTranscriptionSession(
+        recorder=recorder,
+        transcriber=transcriber,
+        config=StreamingConfig(min_first_chunk_seconds=5.0, chunk_seconds=5.0),
+        sample_rate=SAMPLE_RATE,
+    )
+
+    assert session.process_available_audio_once() is False
+
+    final_text = session.finalize(audio_seconds(6.0))
+
+    assert final_text == "batch fallback"
+    transcriber.transcribe_with_fallback.assert_called_once()
+
+
+def test_streaming_session_start_and_cancel_stop_worker():
+    recorder = MagicMock()
+    recorder.snapshot.return_value = np.array([], dtype=np.float32)
+    transcriber = MagicMock()
+    session = StreamingTranscriptionSession(
+        recorder=recorder,
+        transcriber=transcriber,
+        config=StreamingConfig(),
+        sample_rate=SAMPLE_RATE,
+        poll_interval_seconds=0.01,
+    )
+
+    session.start()
+    session.cancel()
+
+    assert session.is_running is False
