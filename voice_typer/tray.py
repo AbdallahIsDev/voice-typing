@@ -191,11 +191,12 @@ class TrayIcon:
     def _build_menu(self):
         """Build the tray menu dynamically on each right-click."""
         items = []
+        hotkey = self._display_hotkey()
 
         # Toggle dictation
         items.append(
             pystray.MenuItem(
-                "Toggle Dictation (F2)",
+                f"Toggle Dictation ({hotkey})",
                 self._wrap(self.on_toggle),
                 default=True,
             )
@@ -203,15 +204,13 @@ class TrayIcon:
 
         items.append(pystray.Menu.SEPARATOR)
 
-        # Autostart toggle
-        if self.on_toggle_autostart:
-            items.append(
-                pystray.MenuItem(
-                    "Start on Login",
-                    self._wrap(self.on_toggle_autostart),
-                    checked=lambda item: self._autostart_enabled,
-                )
+        items.append(
+            pystray.MenuItem(
+                f"Hotkey: {hotkey}",
+                None,
+                enabled=False,
             )
+        )
 
         # Microphone submenu
         if self.on_select_mic and self._microphones:
@@ -227,7 +226,7 @@ class TrayIcon:
 
         # Settings
         items.append(
-            pystray.MenuItem("Settings", self._wrap(self.on_settings))
+            pystray.MenuItem("Settings...", self._wrap(self.on_settings))
         )
 
         items.append(pystray.Menu.SEPARATOR)
@@ -236,6 +235,11 @@ class TrayIcon:
         items.append(pystray.MenuItem("Quit", self._wrap(self.on_quit)))
 
         return tuple(items)
+
+    def _display_hotkey(self) -> str:
+        """Return the configured hotkey in a user-facing form."""
+        hotkey = getattr(self._config, "hotkey", "<f2>") or "<f2>"
+        return hotkey.strip("<>").upper()
 
     def _build_mic_menu_items(self):
         """Build microphone radio items with duplicate-name disambiguation."""

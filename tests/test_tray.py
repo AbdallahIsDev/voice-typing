@@ -15,6 +15,7 @@ import sys
 import time
 import warnings
 import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 
@@ -239,6 +240,80 @@ class TestMenuCallableSignature:
             assert isinstance(item, (_FakeMenuItem, str)), (
                 f"Unexpected menu item type: {type(item)}"
             )
+
+
+# ─── Settings UX: simplified tray menu ─────────────────────────────────
+
+class TestSettingsUxTrayMenu:
+    def _menu_labels(self, tray):
+        tray.start(bg_work=None)
+        return [
+            item.args[0]
+            for item in _FakeIcon.last_kwargs["menu"]()
+            if isinstance(item, _FakeMenuItem)
+        ]
+
+    def test_main_menu_does_not_include_start_on_login(self):
+        from voice_typer.tray import TrayIcon
+
+        tray = TrayIcon(
+            on_toggle=MagicMock(),
+            on_settings=MagicMock(),
+            on_quit=MagicMock(),
+            on_toggle_autostart=MagicMock(),
+        )
+
+        labels = self._menu_labels(tray)
+
+        assert "Start on Login" not in labels
+
+    def test_toggle_label_includes_current_hotkey(self):
+        from voice_typer.tray import TrayIcon
+
+        tray = TrayIcon(
+            on_toggle=MagicMock(),
+            on_settings=MagicMock(),
+            on_quit=MagicMock(),
+            config=SimpleNamespace(hotkey="<f9>"),
+        )
+
+        labels = self._menu_labels(tray)
+
+        assert "Toggle Dictation (F9)" in labels
+
+    def test_menu_includes_disabled_hotkey_info_item(self, tray):
+        tray._config = SimpleNamespace(hotkey="<f2>")
+
+        tray.start(bg_work=None)
+        hotkey_item = next(
+            item
+            for item in _FakeIcon.last_kwargs["menu"]()
+            if isinstance(item, _FakeMenuItem) and item.args[0] == "Hotkey: F2"
+        )
+
+        assert hotkey_item.kwargs["enabled"] is False
+
+    def test_settings_label_uses_ellipsis(self, tray):
+        labels = self._menu_labels(tray)
+
+        assert "Settings..." in labels
+        assert "Settings" not in labels
+
+    def test_microphone_submenu_remains_when_mics_are_present(self, tray):
+        tray.on_select_mic = MagicMock()
+        tray._config = SimpleNamespace(microphone=None, hotkey="<f2>")
+        tray.set_microphones([
+            {"id": "mic-1", "name": "Built-in Mic", "host_api": "WASAPI"},
+        ])
+
+        tray.start(bg_work=None)
+        mic_item = next(
+            item
+            for item in _FakeIcon.last_kwargs["menu"]()
+            if isinstance(item, _FakeMenuItem) and item.args[0] == "Microphone"
+        )
+
+        assert isinstance(mic_item.args[1], _FakeMenu)
 
 
 # ─── Integration: full start + run cycle ────────────────────────────────
