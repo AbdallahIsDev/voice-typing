@@ -13,6 +13,7 @@ from typing import Optional
 from voice_typer.config import Config, _config_dir
 from voice_typer.recording import Recorder
 from voice_typer.transcription import TranscriptionEngine
+from voice_typer.streaming import StreamingConfig, StreamingTranscriptionSession
 from voice_typer.clipboard import ClipboardManager
 from voice_typer.tray import TrayIcon, AppState
 from voice_typer.platform import (
@@ -93,6 +94,7 @@ class VoiceTyperApp:
         )
 
         self._hotkey_backend: Optional[HotkeyBackend] = None
+        self._streaming_session: Optional[StreamingTranscriptionSession] = None
         self._busy = False  # True during transcription
         self._model_load_attempted = False  # True after first load() call
         self._shutting_down = False  # True once quit() starts
@@ -287,10 +289,12 @@ class VoiceTyperApp:
         log.info("[DICTATION] Starting recording...")
         try:
             self.recorder.start()
+            self._start_streaming_session_if_enabled()
             self.tray.set_state(AppState.RECORDING, "Recording...")
             log.info("[DICTATION] Recording started OK")
         except Exception as e:
             log.exception("[DICTATION] Failed to start recording: %s", e)
+            self._cancel_streaming_session()
             self.tray.set_state(AppState.ERROR, "Recording failed")
             self.tray.notify(
                 "Voice Typer",
@@ -312,6 +316,7 @@ class VoiceTyperApp:
             audio = self.recorder.stop()
         except Exception as e:
             log.exception("[DICTATION] Failed to stop recording")
+            self._cancel_streaming_session()
             self.tray.set_state(AppState.ERROR, "Stop failed")
             self.tray.notify("Voice Typer", f"Could not stop recording.\n{e}")
             self._busy = False
@@ -326,6 +331,7 @@ class VoiceTyperApp:
 
         if duration < 0.5:
             log.info("[DICTATION] Audio too short, skipping transcription")
+            self._cancel_streaming_session()
             self.tray.set_state(AppState.IDLE, "Too short — ignored")
             self._busy = False
             threading.Timer(2.0, lambda: self.tray.set_state(AppState.IDLE)).start()
@@ -347,7 +353,13 @@ class VoiceTyperApp:
         def transcribe_thread():
             try:
                 log.info("[TRANSCRIBE] Starting transcription...")
-                text = self.transcriber.transcribe_with_fallback(audio)
+                session = self._streaming_session
+                if session is not None:
+                    log.info("[STREAMING] Finalizing streaming transcript")
+                    text = session.finalize(audio)
+                    self._streaming_session = None
+                else:
+                    text = self.transcriber.transcribe_with_fallback(audio)
                 log.info("[TRANSCRIBE] Transcription complete (len=%d)", len(text) if text else 0)
 
                 if not text:
@@ -422,10 +434,59 @@ class VoiceTyperApp:
 
             finally:
                 watchdog.cancel()
+                if self._streaming_session is not None and not self.recorder.recording:
+                    self._streaming_session = None
                 self._busy = False
                 log.info("[TRANSCRIBE] _busy reset to False")
 
         threading.Thread(target=transcribe_thread, daemon=True).start()
+
+    def _streaming_enabled(self) -> bool:
+        """Return whether hidden streaming should run for the next recording."""
+        if os.environ.get("VOICE_TYPER_STREAMING") == "0":
+            return False
+        return bool(getattr(self.config, "streaming_transcription", False))
+
+    def _streaming_config(self) -> StreamingConfig:
+        return StreamingConfig(
+            enabled=True,
+            chunk_seconds=self.config.streaming_chunk_seconds,
+            step_seconds=self.config.streaming_step_seconds,
+            left_overlap_seconds=self.config.streaming_left_overlap_seconds,
+            right_guard_seconds=self.config.streaming_right_guard_seconds,
+            min_first_chunk_seconds=self.config.streaming_min_first_chunk_seconds,
+            silence_threshold=self.config.streaming_silence_threshold,
+        )
+
+    def _start_streaming_session_if_enabled(self):
+        """Start hidden streaming work for the active recording if enabled."""
+        self._streaming_session = None
+        if not self._streaming_enabled():
+            return
+
+        try:
+            session = StreamingTranscriptionSession(
+                recorder=self.recorder,
+                transcriber=self.transcriber,
+                config=self._streaming_config(),
+                sample_rate=self.config.sample_rate,
+            )
+            session.start()
+            self._streaming_session = session
+            log.info("[STREAMING] Hidden streaming session started")
+        except Exception as e:
+            log.exception("[STREAMING] Failed to start streaming session: %s", e)
+            self._streaming_session = None
+
+    def _cancel_streaming_session(self):
+        """Cancel any active hidden streaming session."""
+        session = self._streaming_session
+        self._streaming_session = None
+        if session is not None:
+            try:
+                session.cancel()
+            except Exception:
+                log.exception("[STREAMING] Failed to cancel streaming session")
 
     def _force_recover_from_stuck_transcription(self):
         """Safety net: recover from stuck transcription state.
@@ -467,8 +528,14 @@ class VoiceTyperApp:
         """Handle microphone selection from tray menu."""
         self.config.microphone = mic_name
         self.config.save()
-        self.recorder = Recorder(self.config)  # re-create with new mic
         label = mic_name if mic_name else "System Default"
+
+        if self.recorder.recording:
+            log.info("Microphone changed to %s; applying after active recording", label)
+            self.tray.notify("Voice Typer", f"Microphone next recording: {label}")
+            return
+
+        self.recorder = Recorder(self.config)  # re-create with new mic
         log.info("Microphone changed to: %s", label)
         self.tray.notify("Voice Typer", f"Microphone: {label}")
 
@@ -509,6 +576,8 @@ class VoiceTyperApp:
         log.info("Shutting down (quit() called from thread=%s, is_main=%s)",
                  threading.current_thread().name, is_main)
         self._shutting_down = True
+
+        self._cancel_streaming_session()
 
         if self.recorder.recording:
             self.recorder.discard()

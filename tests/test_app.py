@@ -751,6 +751,96 @@ class TestTryLoadModel:
         assert app._model_load_attempted is True
 
 
+class TestStreamingIntegration:
+    def test_start_dictation_starts_streaming_session_when_enabled(self, app, monkeypatch):
+        app.config.streaming_transcription = True
+        app.recorder = MagicMock()
+        app.recorder.recording = False
+        app.transcriber = MagicMock()
+        app.transcriber.is_loaded = True
+        app.tray = MagicMock()
+        app.clipboard = MagicMock()
+
+        session = MagicMock()
+        session_cls = MagicMock(return_value=session)
+        monkeypatch.setattr("voice_typer.app.StreamingTranscriptionSession", session_cls, raising=False)
+
+        app._start_dictation()
+
+        session_cls.assert_called_once()
+        session.start.assert_called_once()
+        app.clipboard.copy.assert_not_called()
+        app.clipboard.paste.assert_not_called()
+
+    def test_stop_dictation_uses_streaming_final_text(self, app):
+        app.config.streaming_transcription = True
+        app.clipboard = MagicMock()
+        app.clipboard.copy = MagicMock(return_value=True)
+        app.clipboard.paste = MagicMock(return_value=True)
+
+        app.transcriber = MagicMock()
+        app.transcriber.transcribe_with_fallback = MagicMock(return_value="batch text")
+        app.transcriber.device_info = "cpu (int8)"
+
+        app.recorder = MagicMock()
+        app.recorder.recording = True
+        audio = np.ones(16000, dtype=np.float32)
+        app.recorder.stop = MagicMock(return_value=audio)
+        app.recorder.last_rms = 0.2
+
+        session = MagicMock()
+        session.finalize = MagicMock(return_value="streamed text")
+        app._streaming_session = session
+
+        app._stop_dictation()
+        _wait_for_busy_clear(app)
+
+        session.finalize.assert_called_once_with(audio)
+        app.transcriber.transcribe_with_fallback.assert_not_called()
+        app.clipboard.copy.assert_called_once_with("streamed text")
+        app.clipboard.paste.assert_called_once()
+
+    def test_streaming_kill_switch_forces_batch_path(self, app, monkeypatch):
+        app.config.streaming_transcription = True
+        monkeypatch.setenv("VOICE_TYPER_STREAMING", "0")
+        app.recorder = MagicMock()
+        app.recorder.recording = False
+        app.transcriber = MagicMock()
+        app.transcriber.is_loaded = True
+        app.tray = MagicMock()
+
+        session_cls = MagicMock()
+        monkeypatch.setattr("voice_typer.app.StreamingTranscriptionSession", session_cls, raising=False)
+
+        app._start_dictation()
+
+        session_cls.assert_not_called()
+        assert getattr(app, "_streaming_session", None) is None
+
+    def test_quit_cancels_active_streaming_session(self, app):
+        session = MagicMock()
+        app._streaming_session = session
+        app.recorder = MagicMock()
+        app.recorder.recording = False
+        app.tray = MagicMock()
+
+        with pytest.raises(SystemExit):
+            app.quit()
+
+        session.cancel.assert_called_once()
+
+    def test_select_microphone_during_recording_defers_recorder_recreation(self, app):
+        app.recorder = MagicMock()
+        app.recorder.recording = True
+        original_recorder = app.recorder
+        app.tray = MagicMock()
+
+        app._select_microphone("1")
+
+        assert app.config.microphone == "1"
+        assert app.recorder is original_recorder
+
+
 class TestStartupResilience:
     """Test that startup continues even when model loading fails."""
 
