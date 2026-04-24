@@ -100,3 +100,63 @@ class TestStopAudioPrep:
         r.stop()
 
         get_resampler.assert_not_called()
+
+    def test_snapshot_returns_audio_without_clearing_buffer(self):
+        from voice_typer.recording import Recorder
+
+        config = MagicMock(sample_rate=16000, microphone=None)
+        r = Recorder(config)
+        r._recording = True
+        r._effective_sr = 16000
+        r._stream = MagicMock()
+        r._buffer = [
+            np.array([[1.0], [2.0]], dtype=np.float32),
+            np.array([[3.0]], dtype=np.float32),
+        ]
+
+        snapshot = r.snapshot()
+
+        np.testing.assert_array_equal(snapshot, np.array([1.0, 2.0, 3.0], dtype=np.float32))
+        assert len(r._buffer) == 2
+
+        stopped = r.stop()
+        np.testing.assert_array_equal(stopped, snapshot)
+
+    def test_snapshot_returns_empty_float32_when_no_buffer_exists(self):
+        from voice_typer.recording import Recorder
+
+        config = MagicMock(sample_rate=16000, microphone=None)
+        r = Recorder(config)
+        r._recording = True
+        r._effective_sr = 16000
+        r._buffer = []
+
+        snapshot = r.snapshot()
+
+        assert snapshot.dtype == np.float32
+        assert snapshot.size == 0
+
+    def test_snapshot_uses_same_resampling_path_as_stop(self, monkeypatch):
+        from voice_typer.recording import Recorder
+
+        calls = []
+
+        def fake_resample_poly(audio, up, down):
+            calls.append((audio.copy(), up, down))
+            return np.array([0.25, 0.5], dtype=np.float32)
+
+        monkeypatch.setattr("voice_typer.recording._get_resample_poly", lambda: fake_resample_poly)
+
+        config = MagicMock(sample_rate=16000, microphone=None)
+        r = Recorder(config)
+        r._recording = True
+        r._effective_sr = 48000
+        r._buffer = [np.ones((6, 1), dtype=np.float32)]
+
+        snapshot = r.snapshot()
+
+        np.testing.assert_array_equal(snapshot, np.array([0.25, 0.5], dtype=np.float32))
+        assert len(r._buffer) == 1
+        assert len(calls) == 1
+        np.testing.assert_array_equal(calls[0][0], np.ones(6, dtype=np.float32))
+        assert calls[0][1:] == (1, 3)

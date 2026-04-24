@@ -1,6 +1,7 @@
 """Whisper transcription engine using faster-whisper."""
 
 import logging
+import threading
 from typing import Optional
 
 import numpy as np
@@ -28,6 +29,7 @@ class TranscriptionEngine:
         self.best_of = best_of
         self.condition_on_previous_text = condition_on_previous_text
         self._model = None
+        self._lock = threading.RLock()
         self._device, self._compute_type = self._resolve_device(device)
 
     def _resolve_device(self, device: str) -> tuple[str, str]:
@@ -76,6 +78,10 @@ class TranscriptionEngine:
 
         Stores which path succeeded via loaded_via property.
         """
+        with self._lock:
+            self._load_unlocked()
+
+    def _load_unlocked(self):
         if self._model is not None:
             return
 
@@ -125,6 +131,10 @@ class TranscriptionEngine:
 
     def transcribe(self, audio: np.ndarray) -> str:
         """Transcribe audio array. Returns cleaned text string."""
+        with self._lock:
+            return self._transcribe_unlocked(audio)
+
+    def _transcribe_unlocked(self, audio: np.ndarray) -> str:
         if self._model is None:
             raise RuntimeError("Model not loaded. Call load() first.")
 
@@ -194,8 +204,12 @@ class TranscriptionEngine:
         If the first attempt fails with a CUDA/cuBLAS/runtime error and
         the model was loaded on GPU, reload on CPU and retry once.
         """
+        with self._lock:
+            return self._transcribe_with_fallback_unlocked(audio)
+
+    def _transcribe_with_fallback_unlocked(self, audio: np.ndarray) -> str:
         try:
-            return self.transcribe(audio)
+            return self._transcribe_unlocked(audio)
         except Exception as first_err:
             error_str = str(first_err).lower()
             is_gpu_error = (
@@ -216,9 +230,57 @@ class TranscriptionEngine:
             self._model = None
             self._device = "cpu"
             self._compute_type = "int8"
-            self.load()  # reloads with the new CPU config
-            return self.transcribe(audio)
+            self._load_unlocked()  # reloads with the new CPU config
+            return self._transcribe_unlocked(audio)
+
+    def transcribe_words(self, audio: np.ndarray, offset_seconds: float = 0.0):
+        """Transcribe audio array into word timings with a global offset."""
+        with self._lock:
+            return self._transcribe_words_unlocked(audio, offset_seconds)
+
+    def _transcribe_words_unlocked(self, audio: np.ndarray, offset_seconds: float):
+        if self._model is None:
+            raise RuntimeError("Model not loaded. Call load() first.")
+
+        if len(audio) == 0:
+            return []
+
+        from voice_typer.streaming import WordTiming
+
+        segments, _info = self._model.transcribe(
+            audio,
+            beam_size=self.beam_size,
+            best_of=self.best_of,
+            temperature=0.0,
+            vad_filter=True,
+            vad_parameters=dict(
+                min_silence_duration_ms=500,
+                speech_pad_ms=200,
+            ),
+            language=self.language,
+            condition_on_previous_text=self.condition_on_previous_text,
+            word_timestamps=True,
+            without_timestamps=False,
+        )
+
+        words = []
+        for seg in segments:
+            for word in getattr(seg, "words", None) or []:
+                text = (word.word or "").strip()
+                if not text:
+                    continue
+                start = (word.start or 0.0) + offset_seconds
+                end = (word.end or word.start or 0.0) + offset_seconds
+                words.append(
+                    WordTiming(
+                        word=text,
+                        start_seconds=start,
+                        end_seconds=end,
+                    )
+                )
+        return words
 
     def unload(self):
         """Free model memory."""
-        self._model = None
+        with self._lock:
+            self._model = None

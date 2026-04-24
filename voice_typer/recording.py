@@ -247,13 +247,35 @@ class Recorder:
             log.warning("[RECORDING] No audio data captured!")
         stats_ms = (time.perf_counter() - stats_started) * 1000
 
-        # Resample to 16 kHz if we recorded at a different rate
+        resample_started = time.perf_counter()
+        audio = self._prepare_audio(audio, effective_sr)
+        resample_ms = (time.perf_counter() - resample_started) * 1000
+
+        total_ms = (time.perf_counter() - stop_started) * 1000
+        log.info(
+            "[RECORDING] Stop timing: stream=%.1fms, concat=%.1fms, "
+            "stats=%.1fms, resample=%.1fms, total=%.1fms",
+            stream_ms, concat_ms, stats_ms, resample_ms, total_ms,
+        )
+
+        return audio
+
+    def snapshot(self) -> np.ndarray:
+        """Return current recorded audio without clearing the active buffer."""
+        with self._lock:
+            if not self._buffer:
+                return np.array([], dtype=np.float32)
+            audio = np.concatenate(self._buffer, axis=0).reshape(-1)
+            effective_sr = self._effective_sr
+
+        return self._prepare_audio(audio, effective_sr)
+
+    def _prepare_audio(self, audio: np.ndarray, effective_sr: int) -> np.ndarray:
+        """Convert captured audio to the configured sample rate."""
         target_sr = self.config.sample_rate  # 16000 for Whisper
-        resample_ms = 0.0
         if effective_sr != target_sr and len(audio) > 0:
             orig_len = len(audio)
             resampled = False
-            resample_started = time.perf_counter()
             try:
                 resample_poly = _get_resample_poly()
                 gcd = math.gcd(effective_sr, target_sr)
@@ -299,14 +321,6 @@ class Recorder:
                     f"Cannot resample audio from {effective_sr} Hz to "
                     f"{target_sr} Hz. Check scipy installation and audio format."
                 )
-            resample_ms = (time.perf_counter() - resample_started) * 1000
-
-        total_ms = (time.perf_counter() - stop_started) * 1000
-        log.info(
-            "[RECORDING] Stop timing: stream=%.1fms, concat=%.1fms, "
-            "stats=%.1fms, resample=%.1fms, total=%.1fms",
-            stream_ms, concat_ms, stats_ms, resample_ms, total_ms,
-        )
 
         return audio
 

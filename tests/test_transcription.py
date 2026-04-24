@@ -292,3 +292,80 @@ class TestTranscribeWithFallback:
         result = engine.transcribe_with_fallback(np.array([], dtype=np.float32))
         assert result == ""
         mock_model.transcribe.assert_not_called()
+
+
+class TestTranscribeWords:
+    def test_transcribe_words_passes_timestamp_options_and_applies_offset(self):
+        import numpy as np
+
+        from voice_typer.streaming import WordTiming
+        from voice_typer.transcription import TranscriptionEngine
+
+        engine = TranscriptionEngine(model_size="small.en", device="cpu")
+        mock_model = MagicMock()
+        segment = MagicMock()
+        segment.words = [
+            MagicMock(word=" hello", start=0.25, end=0.75),
+            MagicMock(word="world", start=0.8, end=1.2),
+        ]
+        mock_model.transcribe.return_value = ([segment], MagicMock())
+        engine._model = mock_model
+
+        words = engine.transcribe_words(
+            np.zeros(16000, dtype=np.float32),
+            offset_seconds=5.0,
+        )
+
+        assert words == [
+            WordTiming(word="hello", start_seconds=5.25, end_seconds=5.75),
+            WordTiming(word="world", start_seconds=5.8, end_seconds=6.2),
+        ]
+        _, kwargs = mock_model.transcribe.call_args
+        assert kwargs["word_timestamps"] is True
+        assert kwargs["without_timestamps"] is False
+
+    def test_transcribe_words_empty_audio_returns_empty_without_calling_model(self):
+        import numpy as np
+        from voice_typer.transcription import TranscriptionEngine
+
+        engine = TranscriptionEngine(model_size="small.en", device="cpu")
+        mock_model = MagicMock()
+        engine._model = mock_model
+
+        assert engine.transcribe_words(np.array([], dtype=np.float32)) == []
+        mock_model.transcribe.assert_not_called()
+
+    def test_model_operations_are_guarded_by_engine_lock(self, monkeypatch):
+        import numpy as np
+        from voice_typer.transcription import TranscriptionEngine
+
+        class TrackingLock:
+            def __init__(self):
+                self.depth = 0
+                self.entries = 0
+
+            def __enter__(self):
+                self.depth += 1
+                self.entries += 1
+
+            def __exit__(self, exc_type, exc, tb):
+                self.depth -= 1
+
+        engine = TranscriptionEngine(model_size="small.en", device="cpu")
+        lock = TrackingLock()
+        engine._lock = lock
+
+        mock_model = MagicMock()
+
+        def transcribe(*args, **kwargs):
+            assert lock.depth == 1
+            return ([MagicMock(text="locked")], MagicMock())
+
+        mock_model.transcribe.side_effect = transcribe
+        engine._model = mock_model
+
+        assert engine.transcribe_with_fallback(np.zeros(16000, dtype=np.float32)) == "locked"
+        engine.unload()
+
+        assert lock.entries >= 2
+        assert engine._model is None
