@@ -14,6 +14,7 @@ from voice_typer.config import Config, _config_dir
 from voice_typer.recording import Recorder
 from voice_typer.transcription import TranscriptionEngine
 from voice_typer.streaming import StreamingConfig, StreamingTranscriptionSession
+from voice_typer.text_cleanup import clean_transcribed_text
 from voice_typer.clipboard import ClipboardManager
 from voice_typer.settings import SettingsController, SettingsWindow
 from voice_typer.tray import TrayIcon, AppState
@@ -391,6 +392,15 @@ class VoiceTyperApp:
                     self._busy = False
                     threading.Timer(2.0, lambda: self.tray.set_state(AppState.IDLE)).start()
                     return
+
+                raw_text = text
+                text = clean_transcribed_text(text)
+                if text != raw_text:
+                    log.info(
+                        "[CLEANUP] Text cleaned: len %d -> %d",
+                        len(raw_text),
+                        len(text),
+                    )
 
                 log.info("Transcription: %s...", text[:100])
 
