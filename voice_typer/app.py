@@ -95,6 +95,7 @@ class VoiceTyperApp:
 
         self._hotkey_backend: Optional[HotkeyBackend] = None
         self._streaming_session: Optional[StreamingTranscriptionSession] = None
+        self._transcription_thread: Optional[threading.Thread] = None
         self._busy = False  # True during transcription
         self._model_load_attempted = False  # True after first load() call
         self._shutting_down = False  # True once quit() starts
@@ -437,9 +438,15 @@ class VoiceTyperApp:
                 if self._streaming_session is not None and not self.recorder.recording:
                     self._streaming_session = None
                 self._busy = False
+                self._transcription_thread = None
                 log.info("[TRANSCRIBE] _busy reset to False")
 
-        threading.Thread(target=transcribe_thread, daemon=True).start()
+        self._transcription_thread = threading.Thread(
+            target=transcribe_thread,
+            name="Transcription",
+            daemon=True,
+        )
+        self._transcription_thread.start()
 
     def _streaming_enabled(self) -> bool:
         """Return whether hidden streaming should run for the next recording."""
@@ -496,6 +503,22 @@ class VoiceTyperApp:
         """
         if not self._busy:
             return  # Already recovered, nothing to do
+        if (
+            self._transcription_thread is not None
+            and self._transcription_thread.is_alive()
+        ):
+            log.warning(
+                "Transcription watchdog fired, but worker is still alive; "
+                "leaving app busy to avoid overlapping model calls"
+            )
+            self.tray.set_state(AppState.TRANSCRIBING, "Still transcribing...")
+            self.tray.notify(
+                "Voice Typer",
+                "Transcription is still running.\n"
+                "Long recordings or CPU fallback can take extra time.",
+            )
+            return
+
         log.warning("FORCE RECOVER: transcription watchdog fired, resetting state")
         self._busy = False
         self.tray.set_state(AppState.IDLE, "Recovered — transcription timed out")

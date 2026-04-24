@@ -202,6 +202,25 @@ def test_streaming_session_falls_back_after_chunk_failure():
     transcriber.transcribe_with_fallback.assert_called_once()
 
 
+def test_streaming_session_without_confirmed_text_uses_fast_batch_finalize():
+    recorder = MagicMock()
+    transcriber = MagicMock()
+    transcriber.transcribe_with_fallback.return_value = "fast batch"
+
+    session = StreamingTranscriptionSession(
+        recorder=recorder,
+        transcriber=transcriber,
+        config=StreamingConfig(),
+        sample_rate=SAMPLE_RATE,
+    )
+
+    final_text = session.finalize(audio_seconds(3.0))
+
+    assert final_text == "fast batch"
+    transcriber.transcribe_words.assert_not_called()
+    transcriber.transcribe_with_fallback.assert_called_once()
+
+
 def test_streaming_session_start_and_cancel_stop_worker():
     recorder = MagicMock()
     recorder.snapshot.return_value = np.array([], dtype=np.float32)

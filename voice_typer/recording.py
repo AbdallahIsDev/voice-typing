@@ -159,7 +159,6 @@ class Recorder:
             return
 
         self._buffer.clear()
-        self._recording = True
 
         device = self._resolve_device()
         effective_sr, dev_info_extra = self._resolve_effective_sample_rate(device)
@@ -189,7 +188,18 @@ class Recorder:
             device=device,
             callback=callback,
         )
-        self._stream.start()
+        try:
+            self._stream.start()
+        except Exception:
+            try:
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None
+            self._recording = False
+            raise
+
+        self._recording = True
 
         target_sr = self.config.sample_rate
         if effective_sr != target_sr and _resample_poly is None and _resample_poly_error is None:

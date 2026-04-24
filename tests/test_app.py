@@ -269,6 +269,20 @@ class TestAppStateTransitions:
         # No state change should have been made
         app.tray.set_state.assert_not_called()
 
+    def test_force_recover_does_not_clear_busy_while_thread_is_alive(self, app):
+        """Watchdog must not allow a second transcription while the old one runs."""
+        app._busy = True
+        app.tray = MagicMock()
+        app._transcription_thread = MagicMock()
+        app._transcription_thread.is_alive.return_value = True
+
+        app._force_recover_from_stuck_transcription()
+
+        assert app._busy is True
+        app.tray.set_state.assert_called()
+        status_text = app.tray.set_state.call_args[0][1]
+        assert "Still transcribing" in status_text
+
     def test_f2_works_after_transcription_failure(self, app):
         """After a transcription failure, pressing F2 should work again."""
         # Simulate: transcription failed, busy was cleared

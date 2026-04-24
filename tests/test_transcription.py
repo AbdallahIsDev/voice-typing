@@ -266,6 +266,30 @@ class TestTranscribeWithFallback:
         assert engine._device == "cpu"
         assert engine._compute_type == "int8"
 
+    def test_transcribe_words_gpu_error_triggers_cpu_fallback(self):
+        """Timestamped streaming transcription should use the same GPU fallback."""
+        import numpy as np
+        import voice_typer.transcription as mod
+        from voice_typer.streaming import WordTiming
+        mod_obj = sys.modules.get("faster_whisper")
+
+        engine, mock_model = self._make_engine_with_model()
+        mock_model.transcribe.side_effect = RuntimeError(
+            "Library cublas64_12.dll is not found or cannot be loaded"
+        )
+
+        cpu_model = MagicMock()
+        segment = MagicMock()
+        segment.words = [MagicMock(word=" fixed", start=0.1, end=0.4)]
+        cpu_model.transcribe.return_value = ([segment], MagicMock())
+        mod_obj.WhisperModel.return_value = cpu_model
+
+        result = engine.transcribe_words(np.zeros(16000, dtype=np.float32))
+
+        assert result == [WordTiming("fixed", start_seconds=0.1, end_seconds=0.4)]
+        assert engine._device == "cpu"
+        assert engine._compute_type == "int8"
+
     def test_non_gpu_error_propagates(self):
         """Non-GPU errors (e.g., ValueError) should NOT trigger fallback."""
         import numpy as np

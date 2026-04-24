@@ -101,6 +101,31 @@ class TestStopAudioPrep:
 
         get_resampler.assert_not_called()
 
+    def test_start_failure_resets_recording_state(self, monkeypatch):
+        from voice_typer.recording import Recorder
+        import voice_typer.recording as recording_mod
+
+        class FailingStream:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                raise RuntimeError("device failed")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(recording_mod.sd, "InputStream", FailingStream)
+
+        config = MagicMock(sample_rate=16000, microphone=None)
+        r = Recorder(config)
+
+        with pytest.raises(RuntimeError, match="device failed"):
+            r.start()
+
+        assert r.recording is False
+        assert r._stream is None
+
     def test_snapshot_returns_audio_without_clearing_buffer(self):
         from voice_typer.recording import Recorder
 

@@ -211,15 +211,7 @@ class TranscriptionEngine:
         try:
             return self._transcribe_unlocked(audio)
         except Exception as first_err:
-            error_str = str(first_err).lower()
-            is_gpu_error = (
-                self._device != "cpu"
-                and any(kw in error_str for kw in [
-                    "cublas", "cuda", "cudnn", "gpu",
-                    "not found or cannot be loaded",
-                ])
-            )
-            if not is_gpu_error:
+            if not self._is_gpu_runtime_error(first_err):
                 raise
 
             log.warning(
@@ -236,6 +228,27 @@ class TranscriptionEngine:
     def transcribe_words(self, audio: np.ndarray, offset_seconds: float = 0.0):
         """Transcribe audio array into word timings with a global offset."""
         with self._lock:
+            return self._transcribe_words_with_fallback_unlocked(audio, offset_seconds)
+
+    def _transcribe_words_with_fallback_unlocked(
+        self,
+        audio: np.ndarray,
+        offset_seconds: float,
+    ):
+        try:
+            return self._transcribe_words_unlocked(audio, offset_seconds)
+        except Exception as first_err:
+            if not self._is_gpu_runtime_error(first_err):
+                raise
+
+            log.warning(
+                "GPU timestamped transcription failed (%s), falling back to CPU",
+                first_err,
+            )
+            self._model = None
+            self._device = "cpu"
+            self._compute_type = "int8"
+            self._load_unlocked()
             return self._transcribe_words_unlocked(audio, offset_seconds)
 
     def _transcribe_words_unlocked(self, audio: np.ndarray, offset_seconds: float):
@@ -279,6 +292,16 @@ class TranscriptionEngine:
                     )
                 )
         return words
+
+    def _is_gpu_runtime_error(self, exc: Exception) -> bool:
+        error_str = str(exc).lower()
+        return (
+            self._device != "cpu"
+            and any(kw in error_str for kw in [
+                "cublas", "cuda", "cudnn", "gpu",
+                "not found or cannot be loaded",
+            ])
+        )
 
     def unload(self):
         """Free model memory."""

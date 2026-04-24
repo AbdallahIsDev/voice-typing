@@ -262,6 +262,8 @@ class StreamingTranscriptionSession:
     def finalize(self, full_audio: np.ndarray) -> str:
         """Return final transcript, using batch fallback if streaming is unsafe."""
         self.cancel()
+        if not self.assembler.committed_text:
+            return self.transcriber.transcribe_with_fallback(full_audio)
         if self._fallback_required:
             return self.transcriber.transcribe_with_fallback(full_audio)
 
