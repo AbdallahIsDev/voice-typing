@@ -16,11 +16,11 @@ class TestConfigDefaults:
         assert c.microphone is None
         assert c.model_size == "small.en"
         assert c.language == "en"
-        assert c.device == "auto"
+        assert c.device == "cuda"
         assert c.beam_size == 1
         assert c.best_of == 1
         assert c.condition_on_previous_text is False
-        assert c.streaming_transcription is False
+        assert c.streaming_transcription is True
         assert c.streaming_chunk_seconds == 12.0
         assert c.streaming_step_seconds == 5.0
         assert c.streaming_left_overlap_seconds == 2.0
@@ -66,8 +66,39 @@ class TestConfigLoadSave:
         assert c.hotkey == "<f9>"
         assert c.microphone == "WO Mic"
         assert c.autostart is True
-        assert c.paste_on_stop is False
+        assert c.paste_on_stop is True
         assert c.show_notifications is False
+
+    def test_load_normalizes_legacy_streaming_and_paste_settings(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("voice_typer.config._config_dir", lambda: tmp_path)
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "streaming_transcription": False,
+            "paste_on_stop": False,
+        }))
+
+        c = Config.load()
+        assert c.streaming_transcription is True
+        assert c.paste_on_stop is True
+
+    @pytest.mark.parametrize("legacy_model", ["tiny.en", "large-v3", "base.en", "unsupported"])
+    def test_load_normalizes_legacy_or_unsupported_model_to_small_en(
+        self, tmp_path, monkeypatch, legacy_model
+    ):
+        monkeypatch.setattr("voice_typer.config._config_dir", lambda: tmp_path)
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"model_size": legacy_model}))
+
+        c = Config.load()
+        assert c.model_size == "small.en"
+
+    def test_load_keeps_medium_en_model(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("voice_typer.config._config_dir", lambda: tmp_path)
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"model_size": "medium.en"}))
+
+        c = Config.load()
+        assert c.model_size == "medium.en"
 
     def test_load_ignores_unknown_keys(self, tmp_path, monkeypatch):
         monkeypatch.setattr("voice_typer.config._config_dir", lambda: tmp_path)
@@ -119,7 +150,7 @@ class TestConfigLoadSave:
         assert c1.beam_size == c2.beam_size
         assert c1.best_of == c2.best_of
         assert c1.condition_on_previous_text == c2.condition_on_previous_text
-        assert c1.streaming_transcription == c2.streaming_transcription
+        assert c2.streaming_transcription is True
         assert c1.streaming_chunk_seconds == c2.streaming_chunk_seconds
         assert c1.streaming_step_seconds == c2.streaming_step_seconds
         assert c1.streaming_left_overlap_seconds == c2.streaming_left_overlap_seconds
@@ -127,5 +158,5 @@ class TestConfigLoadSave:
         assert c1.streaming_min_first_chunk_seconds == c2.streaming_min_first_chunk_seconds
         assert c1.streaming_silence_threshold == c2.streaming_silence_threshold
         assert c1.autostart == c2.autostart
-        assert c1.paste_on_stop == c2.paste_on_stop
+        assert c2.paste_on_stop is True
         assert c1.show_notifications == c2.show_notifications

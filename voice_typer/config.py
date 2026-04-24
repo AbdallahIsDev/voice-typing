@@ -8,6 +8,9 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional
 
 
+ALLOWED_USER_MODELS = {"small.en", "medium.en"}
+
+
 def _config_dir() -> Path:
     """Get platform-specific config directory."""
     if sys.platform == "win32":
@@ -31,15 +34,15 @@ class Config:
     microphone: Optional[str] = None  # None = system default
 
     # Transcription
-    model_size: str = "small.en"  # tiny.en, small.en, medium.en, large-v3
+    model_size: str = "small.en"
     language: str = "en"
-    device: str = "auto"  # auto, cuda, cpu
+    device: str = "cuda"  # cuda, cpu
     beam_size: int = 1  # 1 = fastest greedy decoding; higher values trade speed for accuracy
     best_of: int = 1
     condition_on_previous_text: bool = False
 
     # Hidden streaming transcription
-    streaming_transcription: bool = False
+    streaming_transcription: bool = True
     streaming_chunk_seconds: float = 12.0
     streaming_step_seconds: float = 5.0
     streaming_left_overlap_seconds: float = 2.0
@@ -68,7 +71,12 @@ class Config:
             try:
                 with open(config_file) as f:
                     data = json.load(f)
-                return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+                data = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+                data["streaming_transcription"] = True
+                data["paste_on_stop"] = True
+                if data.get("model_size") not in ALLOWED_USER_MODELS:
+                    data["model_size"] = "small.en"
+                return cls(**data)
             except Exception:
                 return cls()
         return cls()
