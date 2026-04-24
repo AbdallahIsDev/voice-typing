@@ -4,7 +4,7 @@ import logging
 import math
 import threading
 import time
-from typing import Optional, List
+from typing import Optional, List, Any
 
 import numpy as np
 import sounddevice as sd
@@ -88,6 +88,70 @@ class Recorder:
             # Legacy: if someone put a device name string, pass it through
             return mic
 
+    def _host_api_name(self, host_api_index: int) -> str:
+        try:
+            return sd.query_hostapis(host_api_index)["name"]
+        except Exception:
+            return ""
+
+    def _device_index(self, fallback_index: int, device_info: dict) -> int:
+        try:
+            return int(device_info.get("index", fallback_index))
+        except Exception:
+            return fallback_index
+
+    def _same_physical_microphone_candidates(self, device: Any) -> list[Any]:
+        """Return equivalent input device IDs to try if the selected one fails."""
+        candidates = [device]
+        if not isinstance(device, int):
+            return candidates
+
+        try:
+            selected = sd.query_devices(device)
+            selected_name = selected.get("name", "").strip().lower()
+            all_devices = list(sd.query_devices())
+        except Exception as e:
+            log.debug("[RECORDING] Could not build microphone fallback list: %s", e)
+            return candidates
+
+        if not selected_name:
+            return candidates
+
+        alternates = []
+        for fallback_index, info in enumerate(all_devices):
+            index = self._device_index(fallback_index, info)
+            if index == device:
+                continue
+            if info.get("max_input_channels", 0) <= 0:
+                continue
+            if info.get("name", "").strip().lower() != selected_name:
+                continue
+            host_name = self._host_api_name(info.get("hostapi", 0))
+            alternates.append((self._fallback_host_rank(host_name), index))
+
+        alternates.sort()
+        seen = set()
+        ordered = []
+        for candidate in candidates + [index for _, index in alternates]:
+            marker = str(candidate)
+            if marker in seen:
+                continue
+            ordered.append(candidate)
+            seen.add(marker)
+        return ordered
+
+    def _fallback_host_rank(self, host_name: str) -> int:
+        lower = host_name.lower()
+        if lower == "mme":
+            return 0
+        if "wasapi" in lower:
+            return 1
+        if "wdm-ks" in lower:
+            return 2
+        if "directsound" in lower:
+            return 3
+        return 4
+
     def _resolve_effective_sample_rate(self, device: Optional[int]) -> tuple[int, Optional[dict]]:
         """Determine the effective sample rate and device info for the given device.
 
@@ -161,43 +225,78 @@ class Recorder:
         self._buffer.clear()
 
         device = self._resolve_device()
-        effective_sr, dev_info_extra = self._resolve_effective_sample_rate(device)
-
-        # Log the chosen device details (using info already queried)
-        if dev_info_extra:
-            log.info(
-                "[RECORDING] Using device: [%s] %s | host_api=%s | "
-                "native_rate=%d | effective_rate=%d",
-                device if device is not None else "default",
-                dev_info_extra["name"],
-                dev_info_extra["host_api_name"],
-                dev_info_extra["native_rate"],
-                effective_sr,
-            )
-
-        self._effective_sr = effective_sr
+        candidates = self._same_physical_microphone_candidates(device)
 
         def callback(indata, frames, time_info, status):
             with self._lock:
                 self._buffer.append(indata.copy())
 
-        self._stream = sd.InputStream(
-            samplerate=effective_sr,
-            channels=1,
-            dtype=np.float32,
-            device=device,
-            callback=callback,
-        )
-        try:
-            self._stream.start()
-        except Exception:
+        last_error = None
+        selected_device = None
+        effective_sr = self.config.sample_rate
+
+        for candidate in candidates:
+            candidate_sr, dev_info_extra = self._resolve_effective_sample_rate(candidate)
+
+            if dev_info_extra:
+                log.info(
+                    "[RECORDING] Using device: [%s] %s | host_api=%s | "
+                    "native_rate=%d | effective_rate=%d",
+                    candidate if candidate is not None else "default",
+                    dev_info_extra["name"],
+                    dev_info_extra["host_api_name"],
+                    dev_info_extra["native_rate"],
+                    candidate_sr,
+                )
+
+            stream = None
             try:
-                self._stream.close()
-            except Exception:
-                pass
-            self._stream = None
-            self._recording = False
-            raise
+                stream = sd.InputStream(
+                    samplerate=candidate_sr,
+                    channels=1,
+                    dtype=np.float32,
+                    device=candidate,
+                    callback=callback,
+                )
+                stream.start()
+            except Exception as e:
+                last_error = e
+                log.warning(
+                    "[RECORDING] Failed to open input device [%s]: %s",
+                    candidate if candidate is not None else "default",
+                    e,
+                )
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                self._stream = None
+                self._recording = False
+                continue
+
+            self._stream = stream
+            self._effective_sr = candidate_sr
+            selected_device = candidate
+            effective_sr = candidate_sr
+            break
+
+        if self._stream is None:
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("No input device could be opened")
+
+        if selected_device != device and isinstance(selected_device, int):
+            log.info(
+                "[RECORDING] Selected microphone [%s] failed; using matching device [%s]",
+                device,
+                selected_device,
+            )
+            self.config.microphone = str(selected_device)
+            try:
+                self.config.save()
+            except Exception as e:
+                log.debug("[RECORDING] Could not persist microphone fallback: %s", e)
 
         self._recording = True
 

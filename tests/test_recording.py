@@ -126,6 +126,60 @@ class TestStopAudioPrep:
         assert r.recording is False
         assert r._stream is None
 
+    def test_start_falls_back_to_same_microphone_on_another_host_api(self, monkeypatch):
+        from voice_typer.recording import Recorder
+        import voice_typer.recording as recording_mod
+
+        devices = [
+            {"index": 0, "name": "Microsoft Sound Mapper - Input", "max_input_channels": 2, "default_samplerate": 44100, "hostapi": 0},
+            {"index": 1, "name": "Microphone (WO Mic Device)", "max_input_channels": 1, "default_samplerate": 44100, "hostapi": 0},
+            {"index": 8, "name": "Primary Sound Capture Driver", "max_input_channels": 2, "default_samplerate": 44100, "hostapi": 1},
+            {"index": 9, "name": "Microphone (WO Mic Device)", "max_input_channels": 1, "default_samplerate": 44100, "hostapi": 1},
+        ]
+        host_apis = {
+            0: {"name": "MME", "default_input_device": 1},
+            1: {"name": "Windows DirectSound", "default_input_device": 8},
+        }
+
+        def query_devices(device=None, kind=None):
+            if kind == "input":
+                return devices[1]
+            if device is None:
+                return devices
+            return next(dev for dev in devices if dev["index"] == device)
+
+        monkeypatch.setattr(recording_mod.sd, "query_devices", query_devices)
+        monkeypatch.setattr(recording_mod.sd, "query_hostapis", lambda idx=None: host_apis[idx])
+
+        opened_devices = []
+
+        class FallbackStream:
+            def __init__(self, *args, **kwargs):
+                opened_devices.append(kwargs["device"])
+                if kwargs["device"] == 9:
+                    raise RuntimeError("DirectSound error")
+                self.closed = False
+                self.started = False
+
+            def start(self):
+                self.started = True
+
+            def close(self):
+                self.closed = True
+
+        monkeypatch.setattr(recording_mod.sd, "InputStream", FallbackStream)
+
+        config = MagicMock(sample_rate=16000, microphone="9")
+        r = Recorder(config)
+
+        r.start()
+
+        assert opened_devices == [9, 1]
+        assert r.recording is True
+        assert r._stream is not None
+        assert config.microphone == "1"
+        config.save.assert_called_once()
+
     def test_snapshot_returns_audio_without_clearing_buffer(self):
         from voice_typer.recording import Recorder
 
