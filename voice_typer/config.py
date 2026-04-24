@@ -72,6 +72,7 @@ class Config:
                 with open(config_file) as f:
                     data = json.load(f)
                 data = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+                data["device"] = "cuda"
                 data["streaming_transcription"] = True
                 data["paste_on_stop"] = True
                 if data.get("model_size") not in ALLOWED_USER_MODELS:

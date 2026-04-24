@@ -75,11 +75,13 @@ class TestConfigLoadSave:
         config_file.write_text(json.dumps({
             "streaming_transcription": False,
             "paste_on_stop": False,
+            "device": "cpu",
         }))
 
         c = Config.load()
         assert c.streaming_transcription is True
         assert c.paste_on_stop is True
+        assert c.device == "cuda"
 
     @pytest.mark.parametrize("legacy_model", ["tiny.en", "large-v3", "base.en", "unsupported"])
     def test_load_normalizes_legacy_or_unsupported_model_to_small_en(
@@ -146,7 +148,7 @@ class TestConfigLoadSave:
         assert c1.hotkey == c2.hotkey
         assert c1.microphone == c2.microphone
         assert c1.model_size == c2.model_size
-        assert c1.device == c2.device
+        assert c2.device == "cuda"
         assert c1.beam_size == c2.beam_size
         assert c1.best_of == c2.best_of
         assert c1.condition_on_previous_text == c2.condition_on_previous_text

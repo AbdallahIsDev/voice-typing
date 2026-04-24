@@ -101,13 +101,20 @@ class SettingsWindow:
     validation and side effects to SettingsController.
     """
 
-    def __init__(self, controller: SettingsController, microphones=None, parent=None):
+    def __init__(
+        self,
+        controller: SettingsController,
+        microphones=None,
+        parent=None,
+        on_open_config: Optional[Callable[[], None]] = None,
+    ):
         import tkinter as tk
         from tkinter import messagebox, ttk
 
         self.controller = controller
         self.microphones = microphones or []
         self._messagebox = messagebox
+        self._on_open_config = on_open_config
 
         self.root = tk.Toplevel(parent) if parent is not None else tk.Tk()
         self.root.title("Voice Typer Settings")
@@ -158,17 +165,32 @@ class SettingsWindow:
             width=30,
         ).grid(row=2, column=1, sticky="ew", pady=4)
 
-        ttk.Checkbutton(
+        self._advanced_visible = tk.BooleanVar(self.root, value=False)
+        self.advanced_frame = ttk.LabelFrame(frame, text="Advanced", padding=8)
+        ttk.Button(
             frame,
-            text="Start on login",
-            variable=self.autostart_var,
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=4)
+            text="Advanced",
+            command=self._toggle_advanced,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         ttk.Checkbutton(
-            frame,
+            self.advanced_frame,
+            text="Start on login",
+            variable=self.autostart_var,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=4)
+
+        ttk.Checkbutton(
+            self.advanced_frame,
             text="Show notifications",
             variable=self.notifications_var,
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=4)
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=4)
+
+        if self._on_open_config is not None:
+            ttk.Button(
+                self.advanced_frame,
+                text="Open raw config file",
+                command=self._on_open_config,
+            ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         buttons = ttk.Frame(frame)
         buttons.grid(row=5, column=0, columnspan=2, sticky="e", pady=(12, 0))
@@ -180,17 +202,20 @@ class SettingsWindow:
     def show(self):
         self.root.deiconify()
         self.root.lift()
+        self.root.mainloop()
         return self.root
 
     def _microphone_labels(self):
-        return ["System Default"] + [mic["name"] for mic in self.microphones]
+        return ["System Default"] + [
+            self._microphone_display(mic) for mic in self.microphones
+        ]
 
     def _microphone_label(self, microphone):
         if microphone is None:
             return "System Default"
         for mic in self.microphones:
             if mic.get("id") == microphone:
-                return mic.get("name", microphone)
+                return self._microphone_display(mic)
         return microphone
 
     def _microphone_id(self):
@@ -198,9 +223,32 @@ class SettingsWindow:
         if selected == "System Default":
             return None
         for mic in self.microphones:
-            if mic.get("name") == selected:
+            if self._microphone_display(mic) == selected:
                 return mic.get("id")
         return selected
+
+    def _microphone_display(self, mic):
+        name = mic.get("name", "")
+        host_api = mic.get("host_api", "")
+        suffix = f" - {host_api}" if host_api else ""
+        recommended = ""
+        if "WO Mic" in name and host_api == "Windows DirectSound":
+            recommended = " (recommended)"
+        return f"{name}{suffix}{recommended}"
+
+    def _toggle_advanced(self):
+        if self._advanced_visible.get():
+            self.advanced_frame.grid_forget()
+            self._advanced_visible.set(False)
+        else:
+            self.advanced_frame.grid(
+                row=4,
+                column=0,
+                columnspan=2,
+                sticky="ew",
+                pady=(8, 0),
+            )
+            self._advanced_visible.set(True)
 
     def _save(self):
         try:

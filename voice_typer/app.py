@@ -15,6 +15,7 @@ from voice_typer.recording import Recorder
 from voice_typer.transcription import TranscriptionEngine
 from voice_typer.streaming import StreamingConfig, StreamingTranscriptionSession
 from voice_typer.clipboard import ClipboardManager
+from voice_typer.settings import SettingsController, SettingsWindow
 from voice_typer.tray import TrayIcon, AppState
 from voice_typer.platform import (
     enable_autostart,
@@ -74,6 +75,9 @@ class VoiceTyperApp:
 
     def __init__(self):
         self.config = Config.load()
+        self.config.device = "cuda"
+        self.config.paste_on_stop = True
+        self.config.streaming_transcription = True
         self.recorder = Recorder(self.config)
         self.transcriber = TranscriptionEngine(
             model_size=self.config.model_size,
@@ -83,12 +87,12 @@ class VoiceTyperApp:
             best_of=self.config.best_of,
             condition_on_previous_text=self.config.condition_on_previous_text,
         )
-        self.clipboard = ClipboardManager(paste_enabled=self.config.paste_on_stop)
+        self.clipboard = ClipboardManager(paste_enabled=True)
         self.tray = TrayIcon(
             on_toggle=self.toggle_dictation,
             on_settings=self.show_settings,
             on_quit=self.quit,
-            on_toggle_autostart=self._toggle_autostart,
+            on_toggle_autostart=None,
             on_select_mic=self._select_microphone,
             config=self.config,
         )
@@ -96,6 +100,7 @@ class VoiceTyperApp:
         self._hotkey_backend: Optional[HotkeyBackend] = None
         self._streaming_session: Optional[StreamingTranscriptionSession] = None
         self._transcription_thread: Optional[threading.Thread] = None
+        self._microphones: list[dict] = []
         self._busy = False  # True during transcription
         self._model_load_attempted = False  # True after first load() call
         self._shutting_down = False  # True once quit() starts
@@ -191,6 +196,7 @@ class VoiceTyperApp:
         """Enumerate microphones and update the tray menu."""
         try:
             mics = list_microphones()
+            self._microphones = mics
             self.tray.set_microphones(mics)
             log.info("Found %d microphone(s)", len(mics))
         except Exception as e:
@@ -452,7 +458,7 @@ class VoiceTyperApp:
         """Return whether hidden streaming should run for the next recording."""
         if os.environ.get("VOICE_TYPER_STREAMING") == "0":
             return False
-        return bool(getattr(self.config, "streaming_transcription", False))
+        return True
 
     def _streaming_config(self) -> StreamingConfig:
         return StreamingConfig(
@@ -547,6 +553,28 @@ class VoiceTyperApp:
             log.exception("Failed to toggle autostart")
             self.tray.notify("Voice Typer", f"Could not change autostart setting.\n{e}")
 
+    def _set_autostart(self, enabled: bool):
+        """Set autostart from the advanced settings window."""
+        try:
+            if enabled:
+                enable_autostart()
+            else:
+                disable_autostart()
+            self.config.autostart = enabled
+            self.config.save()
+            self.tray.set_autostart_enabled(enabled)
+            log.info("Autostart set to %s", enabled)
+        except Exception as e:
+            log.exception("Failed to set autostart")
+            self.tray.notify("Voice Typer", f"Could not change autostart setting.\n{e}")
+
+    def _set_notifications(self, enabled: bool):
+        """Set notification behavior from the settings window."""
+        self.config.show_notifications = enabled
+        self.config.save()
+        self.tray.set_notifications_enabled(enabled)
+        log.info("Notifications set to %s", enabled)
+
     def _select_microphone(self, mic_name: str | None):
         """Handle microphone selection from tray menu."""
         self.config.microphone = mic_name
@@ -563,7 +591,23 @@ class VoiceTyperApp:
         self.tray.notify("Voice Typer", f"Microphone: {label}")
 
     def show_settings(self):
-        """Open settings (config file in editor)."""
+        """Open the native settings window."""
+        controller = SettingsController(
+            self.config,
+            on_hotkey_changed=self._restart_hotkey,
+            on_model_changed=self._change_model,
+            on_microphone_changed=self._select_microphone,
+            on_autostart_changed=self._set_autostart,
+            on_notifications_changed=self._set_notifications,
+        )
+        SettingsWindow(
+            controller,
+            microphones=self._microphones,
+            on_open_config=self._open_config_file,
+        ).show()
+
+    def _open_config_file(self):
+        """Open raw settings file for troubleshooting."""
         config_file = self.config.config_dir / "config.json"
         if not config_file.exists():
             self.config.save()
@@ -579,6 +623,38 @@ class VoiceTyperApp:
         except Exception as e:
             log.warning("Could not open editor: %s", e)
             self.tray.notify("Voice Typer", f"Config file:\n{config_file}")
+
+    def _restart_hotkey(self, hotkey: str):
+        """Re-register the global hotkey after settings change."""
+        self.config.hotkey = hotkey
+        if self._hotkey_backend:
+            try:
+                self._hotkey_backend.stop()
+            except Exception:
+                log.exception("[HOTKEY] Failed to stop previous backend")
+            self._hotkey_backend = None
+        self._register_hotkey()
+
+    def _change_model(self, model_size: str):
+        """Apply a model change for future dictation sessions."""
+        self.config.model_size = model_size
+        if self.recorder.recording or self._busy:
+            log.info("Model changed to %s; applying after active work", model_size)
+            return
+        try:
+            self.transcriber.unload()
+        except Exception:
+            log.exception("[MODEL] Failed to unload previous model")
+        self.transcriber = TranscriptionEngine(
+            model_size=self.config.model_size,
+            device="cuda",
+            language=self.config.language,
+            beam_size=self.config.beam_size,
+            best_of=self.config.best_of,
+            condition_on_previous_text=self.config.condition_on_previous_text,
+        )
+        self._model_load_attempted = False
+        self.tray.set_state(AppState.IDLE, "Model changed — press F2 to load")
 
     # ─── Shutdown ──────────────────────────────────────────────────────
 

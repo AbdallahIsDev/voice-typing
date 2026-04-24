@@ -321,7 +321,7 @@ class TestAppStateTransitions:
 
 
 class TestConfigWiring:
-    def test_paste_on_stop_respected(self, tmp_config_dir, monkeypatch):
+    def test_paste_on_stop_is_forced_enabled(self, tmp_config_dir, monkeypatch):
         config_file = tmp_config_dir / "config.json"
         config_file.write_text(json.dumps({"paste_on_stop": False}))
 
@@ -333,8 +333,22 @@ class TestConfigWiring:
         from voice_typer.app import VoiceTyperApp
         app = VoiceTyperApp()
 
-        assert app.config.paste_on_stop is False
-        assert app.clipboard.paste_enabled is False
+        assert app.config.paste_on_stop is True
+        assert app.clipboard.paste_enabled is True
+
+    def test_streaming_is_forced_enabled(self, tmp_config_dir, monkeypatch):
+        config_file = tmp_config_dir / "config.json"
+        config_file.write_text(json.dumps({"streaming_transcription": False}))
+
+        monkeypatch.setattr("voice_typer.app.is_autostart_enabled", lambda: False)
+        monkeypatch.setattr("voice_typer.app.enable_autostart", lambda: True)
+        monkeypatch.setattr("voice_typer.app.disable_autostart", lambda: True)
+        monkeypatch.setattr("voice_typer.app.list_microphones", lambda: [])
+
+        from voice_typer.app import VoiceTyperApp
+        app = VoiceTyperApp()
+
+        assert app.config.streaming_transcription is True
 
     def test_transcription_speed_settings_wired(self, tmp_config_dir, monkeypatch):
         config_file = tmp_config_dir / "config.json"
@@ -391,6 +405,40 @@ class TestConfigWiring:
         app._sync_autostart()
 
         assert len(called) == 1  # disable_autostart was called
+
+
+class TestSettingsWindowIntegration:
+    def test_show_settings_opens_native_window(self, app, monkeypatch):
+        window_cls = MagicMock()
+        monkeypatch.setattr("voice_typer.app.SettingsWindow", window_cls)
+
+        app.show_settings()
+
+        window_cls.assert_called_once()
+        window_cls.return_value.show.assert_called_once()
+
+    def test_restart_hotkey_stops_existing_backend_and_registers_new_one(self, app):
+        old_backend = MagicMock()
+        app._hotkey_backend = old_backend
+        app._register_hotkey = MagicMock()
+
+        app._restart_hotkey("<f3>")
+
+        assert app.config.hotkey == "<f3>"
+        old_backend.stop.assert_called_once()
+        app._register_hotkey.assert_called_once()
+
+    def test_model_change_recreates_transcriber(self, app, monkeypatch):
+        transcriber_cls = MagicMock()
+        monkeypatch.setattr("voice_typer.app.TranscriptionEngine", transcriber_cls)
+
+        app._change_model("medium.en")
+
+        assert app.config.model_size == "medium.en"
+        assert app._model_load_attempted is False
+        _, kwargs = transcriber_cls.call_args
+        assert kwargs["model_size"] == "medium.en"
+        assert kwargs["device"] == "cuda"
 
 
 class TestHotkeyMapping:
