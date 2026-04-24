@@ -172,6 +172,10 @@ def _parse_hotkey_to_pynput(hotkey_str, Key, KeyCode):
 # Win32 constants
 _WM_HOTKEY = 0x0312
 _WM_QUIT = 0x0012
+_MOD_ALT = 0x0001
+_MOD_CONTROL = 0x0002
+_MOD_SHIFT = 0x0004
+_MOD_WIN = 0x0008
 _MOD_NOREPEAT = 0x4000
 _HWND_MESSAGE = -3  # HWND_MESSAGE: creates a message-only window
 _GWLP_USERDATA = -21
@@ -206,9 +210,43 @@ def parse_hotkey_to_vk(hotkey_str: str) -> Optional[int]:
 
     Returns None if the key cannot be parsed.
     """
+    parsed = parse_hotkey_to_win32(hotkey_str)
+    if parsed is None:
+        return None
+    return parsed[0]
+
+
+def parse_hotkey_to_win32(hotkey_str: str) -> Optional[tuple[int, int]]:
+    """Convert a hotkey string to ``(virtual_key, RegisterHotKey modifiers)``."""
     _init_vk_map()
-    clean = hotkey_str.strip("<>").lower()
-    return _VK_MAP.get(clean)
+    modifiers = 0
+    key_name = None
+
+    for raw_part in hotkey_str.split("+"):
+        part = raw_part.strip().strip("<>").lower()
+        if not part:
+            continue
+        if part in {"ctrl", "control"}:
+            modifiers |= _MOD_CONTROL
+            continue
+        if part == "alt":
+            modifiers |= _MOD_ALT
+            continue
+        if part == "shift":
+            modifiers |= _MOD_SHIFT
+            continue
+        if part in {"cmd", "win", "super"}:
+            modifiers |= _MOD_WIN
+            continue
+        key_name = part
+
+    if key_name is None:
+        return None
+
+    vk = _VK_MAP.get(key_name)
+    if vk is None:
+        return None
+    return vk, modifiers
 
 
 class WindowsNativeHotkey(HotkeyBackend):
@@ -231,6 +269,7 @@ class WindowsNativeHotkey(HotkeyBackend):
         self._kernel32 = None
         self._success = False  # True only when both CreateWindowExW AND RegisterHotKey succeed
         self._vk: Optional[int] = None
+        self._modifiers = 0
         self._hwnd = None  # message-only window handle
         self._using_polling = False  # True if falling back to GetAsyncKeyState
 
@@ -238,11 +277,12 @@ class WindowsNativeHotkey(HotkeyBackend):
         import ctypes
         import ctypes.wintypes
 
-        self._vk = _win32_vk(self.hotkey_str.strip("<>").lower())
-        if self._vk is None:
+        parsed = parse_hotkey_to_win32(self.hotkey_str)
+        if parsed is None:
             raise ValueError(
                 f"Cannot parse hotkey {self.hotkey_str!r} to a VK code"
             )
+        self._vk, self._modifiers = parsed
 
         self._user32 = ctypes.windll.user32  # type: ignore[attr-defined]
         self._kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
@@ -338,7 +378,7 @@ class WindowsNativeHotkey(HotkeyBackend):
                 # Using an HWND (even HWND_MESSAGE) causes GetMessageW to
                 # silently miss the message on some Windows configurations.
                 result = self._user32.RegisterHotKey(
-                    0, self._hotkey_id, _MOD_NOREPEAT, self._vk
+                    0, self._hotkey_id, _MOD_NOREPEAT | self._modifiers, self._vk
                 )
                 if not result:
                     err = self._kernel32.GetLastError()
@@ -414,15 +454,33 @@ class WindowsNativeHotkey(HotkeyBackend):
         import ctypes
         vk = self._vk
         was_pressed = False
-        log.info("Polling loop started for VK=0x%X", vk)
+        log.info("Polling loop started for VK=0x%X modifiers=0x%X", vk, self._modifiers)
         while not self._stop_event.is_set():
             state = self._user32.GetAsyncKeyState(vk)
-            is_pressed = bool(state & 0x8000)  # high bit = currently down
+            is_pressed = bool(state & 0x8000) and self._modifiers_pressed()
             if is_pressed and not was_pressed:
                 log.info("[HOTKEY FIRED] GetAsyncKeyState detected key-down")
                 callback()
             was_pressed = is_pressed
             self._kernel32.Sleep(33)  # ~30Hz polling rate
+
+    def _modifiers_pressed(self) -> bool:
+        if self._modifiers & _MOD_CONTROL:
+            if not self._key_pressed(0x11):
+                return False
+        if self._modifiers & _MOD_SHIFT:
+            if not self._key_pressed(0x10):
+                return False
+        if self._modifiers & _MOD_ALT:
+            if not self._key_pressed(0x12):
+                return False
+        if self._modifiers & _MOD_WIN:
+            if not (self._key_pressed(0x5B) or self._key_pressed(0x5C)):
+                return False
+        return True
+
+    def _key_pressed(self, vk: int) -> bool:
+        return bool(self._user32.GetAsyncKeyState(vk) & 0x8000)
 
     def stop(self) -> None:
         log.info("Stopping Windows native hotkey listener")
@@ -446,6 +504,7 @@ class WindowsNativeHotkey(HotkeyBackend):
             "WindowsNativeHotkey\n"
             f"Hotkey: {self.hotkey_str}\n"
             f"VK: 0x{self._vk:X} ({self._vk})\n"
+            f"Modifiers: 0x{self._modifiers:X}\n"
             f"Mode: {mode}\n"
             f"Thread name: {self._thread.name}\n"
             f"Thread alive: {self._thread.is_alive()}\n"

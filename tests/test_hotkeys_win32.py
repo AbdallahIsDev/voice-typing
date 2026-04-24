@@ -303,6 +303,19 @@ class TestMockVerification:
         mock_user32.RegisterHotKey.assert_called_once()
         backend.stop()
 
+    def test_register_hotkey_uses_ctrl_modifier_for_ctrl_digit(self, mock_win32):
+        """Ctrl+1 should register Ctrl as a modifier and 1 as the main key."""
+        mock_user32, _ = mock_win32
+        from voice_typer.hotkeys import WindowsNativeHotkey
+
+        backend = WindowsNativeHotkey("<ctrl>+1")
+        backend.start(MagicMock())
+
+        args = mock_user32.RegisterHotKey.call_args[0]
+        assert args[2] == 0x4000 | 0x0002
+        assert args[3] == ord("1")
+        backend.stop()
+
     def test_get_module_handle_called(self, mock_win32):
         """GetModuleHandleW should be called to get hInstance."""
         _, mock_kernel32 = mock_win32

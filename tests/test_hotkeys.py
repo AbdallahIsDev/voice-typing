@@ -88,6 +88,22 @@ class TestParseHotkeyToVk:
         assert parse_hotkey_to_vk("<f5>") == parse_hotkey_to_vk("f5")
 
 
+class TestParseHotkeyToWin32:
+    def test_ctrl_digit_parses_key_and_modifier(self):
+        from voice_typer.hotkeys import parse_hotkey_to_win32
+
+        parsed = parse_hotkey_to_win32("<ctrl>+1")
+
+        assert parsed == (ord("1"), 0x0002)
+
+    def test_plain_function_key_has_no_modifier(self):
+        from voice_typer.hotkeys import parse_hotkey_to_win32
+
+        parsed = parse_hotkey_to_win32("<f2>")
+
+        assert parsed == (0x71, 0)
+
+
 # ─── PynputHotkey backend ────────────────────────────────────────────────────
 
 

@@ -281,23 +281,61 @@ class TestSettingsUxTrayMenu:
 
         assert "Toggle Dictation (F9)" in labels
 
-    def test_menu_includes_disabled_hotkey_info_item(self, tray):
-        tray._config = SimpleNamespace(hotkey="<f2>")
+    def test_menu_includes_hotkey_submenu(self, tray):
+        tray._config = SimpleNamespace(hotkey="<f2>", model_size="small.en")
+        tray.on_select_hotkey = MagicMock()
 
         tray.start(bg_work=None)
-        hotkey_item = next(
+        hotkey_menu = next(
             item
             for item in _FakeIcon.last_kwargs["menu"]()
-            if isinstance(item, _FakeMenuItem) and item.args[0] == "Hotkey: F2"
+            if isinstance(item, _FakeMenuItem) and item.args[0] == "Hotkey"
         )
 
-        assert hotkey_item.kwargs["enabled"] is False
+        labels = [item.args[0] for item in hotkey_menu.args[1]()]
+        assert "F2" in labels
+        assert "Ctrl+1" in labels
 
-    def test_settings_label_uses_ellipsis(self, tray):
+    def test_settings_window_is_not_in_main_menu(self, tray):
         labels = self._menu_labels(tray)
 
-        assert "Settings..." in labels
+        assert "Settings..." not in labels
         assert "Settings" not in labels
+
+    def test_model_submenu_is_in_main_menu(self, tray):
+        tray._config = SimpleNamespace(hotkey="<f2>", model_size="small.en")
+        tray.on_select_model = MagicMock()
+
+        tray.start(bg_work=None)
+        model_menu = next(
+            item
+            for item in _FakeIcon.last_kwargs["menu"]()
+            if isinstance(item, _FakeMenuItem) and item.args[0] == "Model"
+        )
+
+        labels = [item.args[0] for item in model_menu.args[1]()]
+        assert labels == ["small.en", "medium.en"]
+
+    def test_advanced_submenu_has_autostart_and_notifications(self, tray):
+        tray._config = SimpleNamespace(
+            hotkey="<f2>",
+            model_size="small.en",
+            autostart=True,
+            show_notifications=True,
+        )
+        tray.on_toggle_autostart = MagicMock()
+        tray.on_toggle_notifications = MagicMock()
+
+        tray.start(bg_work=None)
+        advanced_menu = next(
+            item
+            for item in _FakeIcon.last_kwargs["menu"]()
+            if isinstance(item, _FakeMenuItem) and item.args[0] == "Advanced"
+        )
+
+        labels = [item.args[0] for item in advanced_menu.args[1]()]
+        assert "Start on Login" in labels
+        assert "Notifications" in labels
 
     def test_microphone_submenu_remains_when_mics_are_present(self, tray):
         tray.on_select_mic = MagicMock()

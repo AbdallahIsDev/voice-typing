@@ -41,6 +41,9 @@ class TrayIcon:
         on_quit: Callable,
         on_toggle_autostart: Optional[Callable] = None,
         on_select_mic: Optional[Callable[[Optional[str]], None]] = None,
+        on_select_hotkey: Optional[Callable[[str], None]] = None,
+        on_select_model: Optional[Callable[[str], None]] = None,
+        on_toggle_notifications: Optional[Callable[[bool], None]] = None,
         config=None,
     ):
         self.on_toggle = on_toggle
@@ -48,6 +51,9 @@ class TrayIcon:
         self.on_quit = on_quit
         self.on_toggle_autostart = on_toggle_autostart
         self.on_select_mic = on_select_mic
+        self.on_select_hotkey = on_select_hotkey
+        self.on_select_model = on_select_model
+        self.on_toggle_notifications = on_toggle_notifications
         self._config = config  # reference to live Config object
 
         self._icon: Optional[pystray.Icon] = None
@@ -204,13 +210,21 @@ class TrayIcon:
 
         items.append(pystray.Menu.SEPARATOR)
 
-        items.append(
-            pystray.MenuItem(
-                f"Hotkey: {hotkey}",
-                None,
-                enabled=False,
+        if self.on_select_hotkey:
+            items.append(
+                pystray.MenuItem(
+                    "Hotkey",
+                    pystray.Menu(*self._build_hotkey_menu_items()),
+                )
             )
-        )
+        else:
+            items.append(
+                pystray.MenuItem(
+                    f"Hotkey: {hotkey}",
+                    None,
+                    enabled=False,
+                )
+            )
 
         # Microphone submenu
         if self.on_select_mic and self._microphones:
@@ -222,12 +236,22 @@ class TrayIcon:
                 )
             )
 
-        items.append(pystray.Menu.SEPARATOR)
+        if self.on_select_model:
+            items.append(
+                pystray.MenuItem(
+                    "Model",
+                    pystray.Menu(*self._build_model_menu_items()),
+                )
+            )
 
-        # Settings
-        items.append(
-            pystray.MenuItem("Settings...", self._wrap(self.on_settings))
-        )
+        advanced_items = self._build_advanced_menu_items()
+        if advanced_items:
+            items.append(
+                pystray.MenuItem(
+                    "Advanced",
+                    pystray.Menu(*advanced_items),
+                )
+            )
 
         items.append(pystray.Menu.SEPARATOR)
 
@@ -239,7 +263,79 @@ class TrayIcon:
     def _display_hotkey(self) -> str:
         """Return the configured hotkey in a user-facing form."""
         hotkey = getattr(self._config, "hotkey", "<f2>") or "<f2>"
-        return hotkey.strip("<>").upper()
+        return self._format_hotkey_label(hotkey)
+
+    def _build_hotkey_menu_items(self):
+        current = getattr(self._config, "hotkey", "<f2>") or "<f2>"
+        presets = [
+            "<f2>", "<f3>", "<f4>", "<f5>", "<f6>", "<f7>", "<f8>",
+            "<f9>", "<f10>", "<f11>", "<f12>",
+            "<ctrl>+1", "<ctrl>+2", "<ctrl>+3", "<ctrl>+4", "<ctrl>+5",
+        ]
+        return [
+            pystray.MenuItem(
+                self._format_hotkey_label(hotkey),
+                self._wrap(lambda hk=hotkey: self.on_select_hotkey(hk)),
+                checked=lambda item, hk=hotkey: current == hk,
+                radio=True,
+            )
+            for hotkey in presets
+        ]
+
+    def _build_model_menu_items(self):
+        current = getattr(self._config, "model_size", "small.en") or "small.en"
+        return [
+            pystray.MenuItem(
+                model,
+                self._wrap(lambda model_size=model: self.on_select_model(model_size)),
+                checked=lambda item, model_size=model: current == model_size,
+                radio=True,
+            )
+            for model in ("small.en", "medium.en")
+        ]
+
+    def _build_advanced_menu_items(self):
+        items = []
+        if self.on_toggle_autostart:
+            items.append(
+                pystray.MenuItem(
+                    "Start on Login",
+                    self._wrap(self.on_toggle_autostart),
+                    checked=lambda item: bool(getattr(self._config, "autostart", False)),
+                )
+            )
+        if self.on_toggle_notifications:
+            items.append(
+                pystray.MenuItem(
+                    "Notifications",
+                    self._wrap(
+                        lambda: self.on_toggle_notifications(
+                            not bool(getattr(self._config, "show_notifications", True))
+                        )
+                    ),
+                    checked=lambda item: bool(
+                        getattr(self._config, "show_notifications", True)
+                    ),
+                )
+            )
+        return items
+
+    @staticmethod
+    def _format_hotkey_label(hotkey: str) -> str:
+        parts = []
+        for part in hotkey.split("+"):
+            clean = part.strip().strip("<>").lower()
+            if clean == "ctrl":
+                parts.append("Ctrl")
+            elif clean == "alt":
+                parts.append("Alt")
+            elif clean == "shift":
+                parts.append("Shift")
+            elif clean in {"cmd", "win", "super"}:
+                parts.append("Win")
+            else:
+                parts.append(clean.upper())
+        return "+".join(parts)
 
     def _build_mic_menu_items(self):
         """Build microphone radio items with duplicate-name disambiguation."""

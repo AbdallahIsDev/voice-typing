@@ -92,8 +92,11 @@ class VoiceTyperApp:
             on_toggle=self.toggle_dictation,
             on_settings=self.show_settings,
             on_quit=self.quit,
-            on_toggle_autostart=None,
+            on_toggle_autostart=self._toggle_autostart,
             on_select_mic=self._select_microphone,
+            on_select_hotkey=self._restart_hotkey,
+            on_select_model=self._change_model,
+            on_toggle_notifications=self._set_notifications,
             config=self.config,
         )
 
@@ -627,6 +630,7 @@ class VoiceTyperApp:
     def _restart_hotkey(self, hotkey: str):
         """Re-register the global hotkey after settings change."""
         self.config.hotkey = hotkey
+        self.config.save()
         if self._hotkey_backend:
             try:
                 self._hotkey_backend.stop()
@@ -638,6 +642,7 @@ class VoiceTyperApp:
     def _change_model(self, model_size: str):
         """Apply a model change for future dictation sessions."""
         self.config.model_size = model_size
+        self.config.save()
         if self.recorder.recording or self._busy:
             log.info("Model changed to %s; applying after active work", model_size)
             return
