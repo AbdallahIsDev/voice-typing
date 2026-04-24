@@ -1,6 +1,9 @@
 """Whisper transcription engine using faster-whisper."""
 
 import logging
+import os
+import site
+import sys
 import threading
 from typing import Optional
 
@@ -9,6 +12,54 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 _WHISPER_SAMPLE_RATE = 16000  # Whisper always expects 16kHz input
+_nvidia_dll_path_handles: list[object] = []
+_nvidia_dll_paths_configured = False
+
+
+def _configure_nvidia_dll_paths():
+    """Expose NVIDIA wheel DLL directories to the Windows loader."""
+    global _nvidia_dll_paths_configured
+    if _nvidia_dll_paths_configured or sys.platform != "win32":
+        return
+
+    roots: list[str] = []
+    try:
+        roots.extend(site.getsitepackages())
+    except Exception:
+        pass
+    try:
+        user_site = site.getusersitepackages()
+        if user_site:
+            roots.append(user_site)
+    except Exception:
+        pass
+
+    candidate_parts = [
+        ("nvidia", "cublas", "bin"),
+        ("nvidia", "cudnn", "bin"),
+        ("nvidia", "cuda_nvrtc", "bin"),
+    ]
+    existing_paths = os.environ.get("PATH", "").split(os.pathsep)
+    new_paths: list[str] = []
+    for root in roots:
+        for parts in candidate_parts:
+            path = os.path.join(root, *parts)
+            if not os.path.isdir(path):
+                continue
+            if not any(name.lower().endswith(".dll") for name in os.listdir(path)):
+                continue
+            if path not in existing_paths and path not in new_paths:
+                new_paths.append(path)
+            add_dll_directory = getattr(os, "add_dll_directory", None)
+            if add_dll_directory is not None:
+                handle = add_dll_directory(path)
+                if handle is not None:
+                    _nvidia_dll_path_handles.append(handle)
+
+    if new_paths:
+        os.environ["PATH"] = os.pathsep.join(new_paths + existing_paths)
+        log.info("[CUDA] Added NVIDIA wheel DLL paths: %s", new_paths)
+    _nvidia_dll_paths_configured = True
 
 
 class TranscriptionEngine:
@@ -40,6 +91,7 @@ class TranscriptionEngine:
         # Try CUDA
         if device in ("auto", "cuda"):
             try:
+                _configure_nvidia_dll_paths()
                 import ctranslate2
                 if ctranslate2.get_cuda_device_count() > 0:
                     log.info("Using CUDA device for transcription")
@@ -85,6 +137,7 @@ class TranscriptionEngine:
         if self._model is not None:
             return
 
+        _configure_nvidia_dll_paths()
         from faster_whisper import WhisperModel
 
         # Build fallback chain

@@ -5,6 +5,7 @@ without GPU or model downloads.
 """
 
 import sys
+import os
 import pytest
 from unittest.mock import MagicMock, patch, call
 
@@ -167,6 +168,36 @@ class TestFallbackChain:
         engine.load()
 
         assert engine.loaded_via == "cpu/int8/small.en"
+
+
+class TestNvidiaDllPaths:
+    def test_configure_nvidia_dll_paths_adds_wheel_bins(self, tmp_path, monkeypatch):
+        import voice_typer.transcription as mod
+
+        cublas_bin = tmp_path / "nvidia" / "cublas" / "bin"
+        cudnn_bin = tmp_path / "nvidia" / "cudnn" / "bin"
+        nvrtc_bin = tmp_path / "nvidia" / "cuda_nvrtc" / "bin"
+        for path in (cublas_bin, cudnn_bin, nvrtc_bin):
+            path.mkdir(parents=True)
+        (cublas_bin / "cublas64_12.dll").write_text("")
+        (cudnn_bin / "cudnn64_9.dll").write_text("")
+        (nvrtc_bin / "nvrtc64_120_0.dll").write_text("")
+
+        added = []
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(mod.site, "getsitepackages", lambda: [str(tmp_path)])
+        monkeypatch.setattr(mod.site, "getusersitepackages", lambda: str(tmp_path / "user"))
+        monkeypatch.setattr(mod.os, "add_dll_directory", lambda path: added.append(path))
+        monkeypatch.setenv("PATH", "C:\\Windows")
+        mod._nvidia_dll_path_handles.clear()
+        mod._nvidia_dll_paths_configured = False
+
+        mod._configure_nvidia_dll_paths()
+
+        assert str(cublas_bin) in os.environ["PATH"]
+        assert str(cudnn_bin) in os.environ["PATH"]
+        assert str(nvrtc_bin) in os.environ["PATH"]
+        assert added == [str(cublas_bin), str(cudnn_bin), str(nvrtc_bin)]
 
 
 class TestLoadIdempotent:
