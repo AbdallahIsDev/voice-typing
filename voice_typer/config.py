@@ -45,8 +45,8 @@ class Config:
     streaming_transcription: bool = True
     streaming_chunk_seconds: float = 12.0
     streaming_step_seconds: float = 5.0
-    streaming_left_overlap_seconds: float = 2.0
-    streaming_right_guard_seconds: float = 1.0
+    streaming_left_overlap_seconds: float = 3.0
+    streaming_right_guard_seconds: float = 1.5
     streaming_min_first_chunk_seconds: float = 6.0
     streaming_silence_threshold: float = 0.003
 
@@ -75,6 +75,14 @@ class Config:
                 data["device"] = "cuda"
                 data["streaming_transcription"] = True
                 data["paste_on_stop"] = True
+                data["streaming_left_overlap_seconds"] = max(
+                    float(data.get("streaming_left_overlap_seconds", 3.0)),
+                    3.0,
+                )
+                data["streaming_right_guard_seconds"] = max(
+                    float(data.get("streaming_right_guard_seconds", 1.5)),
+                    1.5,
+                )
                 if data.get("model_size") not in ALLOWED_USER_MODELS:
                     data["model_size"] = "small.en"
                 return cls(**data)

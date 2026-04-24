@@ -23,8 +23,8 @@ class TestConfigDefaults:
         assert c.streaming_transcription is True
         assert c.streaming_chunk_seconds == 12.0
         assert c.streaming_step_seconds == 5.0
-        assert c.streaming_left_overlap_seconds == 2.0
-        assert c.streaming_right_guard_seconds == 1.0
+        assert c.streaming_left_overlap_seconds == 3.0
+        assert c.streaming_right_guard_seconds == 1.5
         assert c.streaming_min_first_chunk_seconds == 6.0
         assert c.streaming_silence_threshold == 0.003
         assert c.autostart is True
@@ -83,6 +83,19 @@ class TestConfigLoadSave:
         assert c.paste_on_stop is True
         assert c.device == "cuda"
 
+    def test_load_raises_streaming_overlap_and_guard_to_safer_minimums(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("voice_typer.config._config_dir", lambda: tmp_path)
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "streaming_left_overlap_seconds": 2.0,
+            "streaming_right_guard_seconds": 1.0,
+        }))
+
+        c = Config.load()
+
+        assert c.streaming_left_overlap_seconds == 3.0
+        assert c.streaming_right_guard_seconds == 1.5
+
     @pytest.mark.parametrize("legacy_model", ["tiny.en", "large-v3", "base.en", "unsupported"])
     def test_load_normalizes_legacy_or_unsupported_model_to_small_en(
         self, tmp_path, monkeypatch, legacy_model
@@ -135,8 +148,8 @@ class TestConfigLoadSave:
             streaming_transcription=True,
             streaming_chunk_seconds=10.0,
             streaming_step_seconds=4.0,
-            streaming_left_overlap_seconds=1.5,
-            streaming_right_guard_seconds=0.75,
+            streaming_left_overlap_seconds=3.5,
+            streaming_right_guard_seconds=1.75,
             streaming_min_first_chunk_seconds=5.0,
             streaming_silence_threshold=0.001,
             autostart=True,

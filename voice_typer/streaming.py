@@ -18,8 +18,8 @@ class StreamingConfig:
     enabled: bool = False
     chunk_seconds: float = 12.0
     step_seconds: float = 5.0
-    left_overlap_seconds: float = 2.0
-    right_guard_seconds: float = 1.0
+    left_overlap_seconds: float = 3.0
+    right_guard_seconds: float = 1.5
     min_first_chunk_seconds: float = 6.0
     silence_threshold: float = 0.003
 
@@ -131,13 +131,13 @@ class AudioWindowPlanner:
 class StreamingTextAssembler:
     """Commit timestamped words only after they are outside the unsafe tail."""
 
-    _words: list[str] = field(default_factory=list)
+    _words: list[WordTiming] = field(default_factory=list)
     _seen_timestamps: set[tuple[float, float]] = field(default_factory=set)
     last_committed_time: float = 0.0
 
     @property
     def committed_text(self) -> str:
-        return " ".join(self._words)
+        return " ".join(word.word for word in self._words)
 
     def add_window(
         self,
@@ -165,20 +165,57 @@ class StreamingTextAssembler:
             )
             if timestamp_key in self._seen_timestamps:
                 continue
-            if word.end_seconds <= self.last_committed_time:
-                continue
 
             text = word.word.strip()
             if not text:
                 continue
+            candidate = WordTiming(
+                text,
+                start_seconds=word.start_seconds,
+                end_seconds=word.end_seconds,
+            )
+            if self._has_near_duplicate(candidate):
+                self._seen_timestamps.add(timestamp_key)
+                continue
             self._seen_timestamps.add(timestamp_key)
-            self._words.append(text)
+            self._insert_word(candidate)
             committed.append(text)
             self.last_committed_time = max(
                 self.last_committed_time,
                 word.end_seconds,
             )
         return " ".join(committed)
+
+    def _insert_word(self, word: WordTiming):
+        for index, existing in enumerate(self._words):
+            if (
+                word.start_seconds < existing.start_seconds
+                or (
+                    word.start_seconds == existing.start_seconds
+                    and word.end_seconds < existing.end_seconds
+                )
+            ):
+                self._words.insert(index, word)
+                return
+        self._words.append(word)
+
+    def _has_near_duplicate(self, word: WordTiming) -> bool:
+        key = _word_key(word.word)
+        if not key:
+            return False
+        for existing in self._words:
+            if _word_key(existing.word) != key:
+                continue
+            if (
+                abs(existing.start_seconds - word.start_seconds) <= 0.25
+                and abs(existing.end_seconds - word.end_seconds) <= 0.25
+            ):
+                return True
+        return False
+
+
+def _word_key(word: str) -> str:
+    return word.strip().strip(".,!?;:").lower()
 
 
 class StreamingTranscriptionSession:

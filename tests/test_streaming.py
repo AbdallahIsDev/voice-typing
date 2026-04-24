@@ -26,8 +26,8 @@ def test_streaming_config_defaults_are_disabled_and_conservative():
     assert config.enabled is False
     assert config.chunk_seconds == 12.0
     assert config.step_seconds == 5.0
-    assert config.left_overlap_seconds == 2.0
-    assert config.right_guard_seconds == 1.0
+    assert config.left_overlap_seconds == 3.0
+    assert config.right_guard_seconds == 1.5
     assert config.min_first_chunk_seconds == 6.0
     assert config.silence_threshold == 0.003
 
@@ -137,6 +137,48 @@ def test_streaming_text_assembler_preserves_repeated_words_at_later_timestamps()
 
     assert committed == "yes yes"
     assert assembler.committed_text == "yes yes"
+
+
+def test_streaming_text_assembler_inserts_late_overlap_words_by_timestamp():
+    assembler = StreamingTextAssembler()
+    assembler.add_words(
+        [
+            WordTiming("the", start_seconds=0.0, end_seconds=0.2),
+            WordTiming("patching", start_seconds=0.7, end_seconds=1.0),
+            WordTiming("process", start_seconds=1.1, end_seconds=1.4),
+        ],
+        commit_horizon_seconds=2.0,
+    )
+
+    committed = assembler.add_words(
+        [
+            WordTiming("streaming", start_seconds=0.3, end_seconds=0.6),
+        ],
+        commit_horizon_seconds=2.0,
+    )
+
+    assert committed == "streaming"
+    assert assembler.committed_text == "the streaming patching process"
+
+
+def test_streaming_text_assembler_skips_retimed_duplicate_overlap_words():
+    assembler = StreamingTextAssembler()
+    assembler.add_words(
+        [
+            WordTiming("patching", start_seconds=0.70, end_seconds=1.00),
+        ],
+        commit_horizon_seconds=2.0,
+    )
+
+    committed = assembler.add_words(
+        [
+            WordTiming("patching", start_seconds=0.74, end_seconds=1.05),
+        ],
+        commit_horizon_seconds=2.0,
+    )
+
+    assert committed == ""
+    assert assembler.committed_text == "patching"
 
 
 def test_streaming_session_finalizes_only_uncommitted_tail():
